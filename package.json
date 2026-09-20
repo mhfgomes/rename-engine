@@ -1,0 +1,64 @@
+{
+  "name": "@fastrenamer/rename-engine",
+  "version": "0.1.0",
+  "description": "A filesystem-independent planning engine for safe batch renames.",
+  "author": "mhfgomes",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mhfgomes/rename-engine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mhfgomes/fastrenamer/issues"
+  },
+  "homepage": "https://github.com/mhfgomes/rename-engine#readme",
+  "keywords": [
+    "batch-rename",
+    "files",
+    "rename"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./sort": {
+      "types": "./dist/sort.d.ts",
+      "import": "./dist/sort.js",
+      "default": "./dist/sort.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js",
+      "default": "./dist/types.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepack": "npm run build",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:package && npm pack --dry-run",
+    "test:package": "node scripts/package-smoke-test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
