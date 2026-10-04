@@ -1,6 +1,6 @@
 {
   "name": "@fastrenamer/rename-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A filesystem-independent planning engine for safe batch renames.",
   "author": "mhfgomes",
   "license": "MIT",
