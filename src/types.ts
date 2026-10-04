@@ -138,7 +138,8 @@ export interface PreviewRequest {
 export interface PreviewRow {
   /**
    * Normalized source path key (see `normalizePathKey`). Rows that share a source key get a
-   * `#2`, `#3`, ... suffix so ids stay unique; such rows are reported as conflicts.
+   * `#<n>` suffix so ids stay unique; such rows are reported as conflicts. Suffixes skip any id
+   * already used by another source key, so they never collide with a real path like `a#2`.
    */
   id: string;
   sourcePath: string;

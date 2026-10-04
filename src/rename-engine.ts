@@ -658,12 +658,29 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
     return nextPath;
   };
 
-  const seenIdCounts = new Map<string, number>();
+  // Every distinct source key is reserved as the id of its first row, so a suffixed id for a
+  // duplicate can never collide with a real source such as `/d/a#2`.
+  const allocatedIds = new Set<string>(sourceKeyCounts.keys());
+  const nextSuffixByKey = new Map<string, number>();
+  const allocateRowId = (sourceKey: string) => {
+    if (!nextSuffixByKey.has(sourceKey)) {
+      nextSuffixByKey.set(sourceKey, 2);
+      return sourceKey;
+    }
+
+    let suffix = nextSuffixByKey.get(sourceKey) as number;
+    while (allocatedIds.has(`${sourceKey}#${suffix}`)) {
+      suffix += 1;
+    }
+    const rowId = `${sourceKey}#${suffix}`;
+    allocatedIds.add(rowId);
+    nextSuffixByKey.set(sourceKey, suffix + 1);
+    return rowId;
+  };
+
   const rows = plannedItems.map((planned): PreviewRow => {
     const { item, sourcePath, parentPath, sourceKey, proposedName, reasons } = planned;
-    const occurrence = (seenIdCounts.get(sourceKey) ?? 0) + 1;
-    seenIdCounts.set(sourceKey, occurrence);
-    const rowId = occurrence === 1 ? sourceKey : `${sourceKey}#${occurrence}`;
+    const rowId = allocateRowId(sourceKey);
 
     const finalDirectoryPath = resolveFinalDirectoryPath(planned);
     const nextPath = resolveTargetPath(planned);

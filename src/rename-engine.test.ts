@@ -679,20 +679,173 @@ describe('generatePreview', () => {
     expect(preview.rows[0].reasons.join(' ')).toContain('Case-only rename');
   });
 
-  it('treats NFC and NFD spellings as the same path on every platform', () => {
+  it('treats NFC and NFD spellings as the same path only on darwin', () => {
     const nfd = 'e\u0301.txt';
     const nfc = '\u00e9.txt';
-    expect(normalizePathKey(`/d/${nfd}`, 'linux')).toBe(normalizePathKey(`/d/${nfc}`, 'linux'));
+    expect(normalizePathKey(`/d/${nfd}`, 'darwin')).toBe(normalizePathKey(`/d/${nfc}`, 'darwin'));
+    expect(normalizePathKey(`/d/${nfd}`, 'linux')).not.toBe(normalizePathKey(`/d/${nfc}`, 'linux'));
+    expect(normalizePathKey(`C:\\d\\${nfd}`, 'win32')).not.toBe(
+      normalizePathKey(`C:\\d\\${nfc}`, 'win32'),
+    );
 
-    for (const platform of ['darwin', 'win32', 'linux'] as const) {
-      const preview = generatePreview({
+    const collide = generatePreview({
+      items: [fileItem('/d', nfd), fileItem('/d', 'x.txt')],
+      rules: [renameTo(`when(originalStem == "x", "${nfc}", currentName)`)],
+      platform: 'darwin',
+      sortMode: 'natural_path',
+    });
+    expect(collide.rows.map((row) => row.status)).toEqual(['conflict', 'conflict']);
+
+    for (const platform of ['linux', 'win32'] as const) {
+      const distinct = generatePreview({
         items: [fileItem('/d', nfd), fileItem('/d', 'x.txt')],
         rules: [renameTo(`when(originalStem == "x", "${nfc}", currentName)`)],
         platform,
         sortMode: 'natural_path',
       });
-      expect(preview.rows.map((row) => row.status)).toEqual(['conflict', 'conflict']);
+      expect(distinct.summary.conflict).toBe(0);
+      expect(distinct.summary.blocked).toBe(false);
     }
+  });
+
+  it('keeps NFC and NFD source filenames as separate rows on linux', () => {
+    const nfd = 'e\u0301.txt';
+    const nfc = '\u00e9.txt';
+    const preview = generatePreview({
+      items: [fileItem('/d', nfc), fileItem('/d', nfd)],
+      rules: [],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+
+    expect(preview.summary.total).toBe(2);
+    expect(preview.summary.unchanged).toBe(2);
+    expect(preview.summary.blocked).toBe(false);
+    expect(new Set(preview.rows.map((row) => row.id))).toEqual(
+      new Set([`/d/${nfc}`, `/d/${nfd}`]),
+    );
+
+    const darwin = generatePreview({
+      items: [fileItem('/d', nfc), fileItem('/d', nfd)],
+      rules: [],
+      platform: 'darwin',
+      sortMode: 'natural_path',
+    });
+    expect(darwin.summary.conflict).toBe(2);
+  });
+
+  it('flags an existing NFD destination as an external conflict on linux', () => {
+    const nfd = 'e\u0301.txt';
+    const nfc = '\u00e9.txt';
+    const checked: string[] = [];
+    const preview = generatePreview({
+      items: [fileItem('/d', nfc)],
+      rules: [renameTo(`"${nfd}"`)],
+      platform: 'linux',
+      sortMode: 'natural_path',
+      existingPathExists: (candidate) => {
+        checked.push(candidate);
+        return candidate === `/d/${nfd}`;
+      },
+    });
+
+    expect(checked).toEqual([`/d/${nfd}`]);
+    expect(preview.rows[0]).toMatchObject({ changed: true, status: 'conflict' });
+    expect(preview.rows[0].reasons).toContain(
+      'Target path already exists outside the current batch.',
+    );
+    expect(preview.summary.blocked).toBe(true);
+
+    // On darwin the same destination is the selected file itself, so the rename is allowed.
+    const darwin = generatePreview({
+      items: [fileItem('/d', nfc)],
+      rules: [renameTo(`"${nfd}"`)],
+      platform: 'darwin',
+      sortMode: 'natural_path',
+      existingPathExists: () => true,
+    });
+    expect(darwin.rows[0].status).toBe('ok');
+  });
+
+  it('does not treat a differently normalized folder as an ancestor on linux', () => {
+
+    const nfdDir = '/d/e\u0301';
+    const items = [
+      fileItem(nfdDir, 'child.txt'),
+      fileItem('/d', '\u00e9', true),
+    ];
+    const preview = generatePreview({
+      items,
+      rules: [renameTo('when(isDirectory, "renamed", currentName)')],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+
+    const child = preview.rows.find((row) => row.originalName === 'child.txt');
+    const folder = preview.rows.find((row) => row.isDirectory);
+    expect(folder?.nextPath).toBe('/d/renamed');
+    expect(child?.nextPath).toBe(`${nfdDir}/child.txt`);
+    expect(child?.finalDirectoryPath).toBe(nfdDir);
+
+    const darwin = generatePreview({
+      items,
+      rules: [renameTo('when(isDirectory, "renamed", currentName)')],
+      platform: 'darwin',
+      sortMode: 'natural_path',
+    });
+    expect(darwin.rows.find((row) => row.originalName === 'child.txt')?.nextPath).toBe(
+      '/d/renamed/child.txt',
+    );
+  });
+
+  it('allocates duplicate row ids that never collide with real suffix-like filenames', () => {
+    const preview = generatePreview({
+      items: [fileItem('/d', 'a'), fileItem('/d', 'a'), fileItem('/d', 'a#2')],
+      rules: [],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+
+    const ids = preview.rows.map((row) => row.id);
+    expect(new Set(ids).size).toBe(3);
+    const real = preview.rows.find((row) => row.id === '/d/a#2');
+    expect(real?.originalName).toBe('a#2');
+    expect(real?.status).toBe('unchanged');
+    expect(real?.reasons).toEqual([]);
+
+    const duplicates = preview.rows.filter((row) => row.originalName === 'a');
+    expect(duplicates.map((row) => row.id).sort()).toEqual(['/d/a', '/d/a#3']);
+    for (const row of duplicates) {
+      expect(row.status).toBe('conflict');
+      expect(row.reasons).toContain('Another item in the batch has the same source path.');
+    }
+    expect(preview.summary).toMatchObject({ total: 3, conflict: 2, unchanged: 1, blocked: true });
+  });
+
+  it('skips every taken suffix when allocating duplicate row ids', () => {
+    const preview = generatePreview({
+      items: [
+        fileItem('/d', 'a'),
+        fileItem('/d', 'a#3'),
+        fileItem('/d', 'a'),
+        fileItem('/d', 'a#2'),
+        fileItem('/d', 'a'),
+        fileItem('/d', 'a#2'),
+      ],
+      rules: [],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+
+    const ids = preview.rows.map((row) => row.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const byName = (name: string) =>
+      preview.rows.filter((row) => row.originalName === name).map((row) => row.id).sort();
+    expect(byName('a')).toEqual(['/d/a', '/d/a#4', '/d/a#5']);
+    expect(byName('a#2')).toEqual(['/d/a#2', '/d/a#2#2']);
+    expect(byName('a#3')).toEqual(['/d/a#3']);
+    expect(preview.rows.find((row) => row.id === '/d/a#3')?.status).toBe('unchanged');
+    expect(preview.summary).toMatchObject({ total: 6, conflict: 5, unchanged: 1 });
   });
 
   it('reports duplicate source paths as conflicts instead of merging them', () => {

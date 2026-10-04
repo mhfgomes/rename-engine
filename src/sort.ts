@@ -22,9 +22,10 @@ export interface SortablePathItem {
 
 export interface SortItemsOptions {
   /**
-   * Target platform used to detect ancestor directories. On darwin and win32 ancestry is
-   * matched case-insensitively. When omitted, segments are compared after NFC normalization
-   * only and both `/` and `\` are treated as separators.
+   * Target platform used to detect ancestor directories. Segments are compared with
+   * `normalizePathKey`, so ancestry is case-insensitive on darwin and win32 and
+   * normalization-insensitive only on darwin. When omitted, segments are compared exactly and
+   * both `/` and `\` are treated as separators.
    */
   platform?: PlatformTarget;
 }
@@ -47,9 +48,7 @@ function splitPathSegments(candidatePath: string, platform: PlatformTarget | und
 
 function getAncestryKey(candidatePath: string, platform: PlatformTarget | undefined) {
   const segments = splitPathSegments(candidatePath, platform);
-  return segments.map((segment) =>
-    platform ? normalizePathKey(segment, platform) : segment.normalize('NFC'),
-  );
+  return segments.map((segment) => (platform ? normalizePathKey(segment, platform) : segment));
 }
 
 /** Compares two strings by Unicode code point. Used as the final, deterministic tie-break. */
