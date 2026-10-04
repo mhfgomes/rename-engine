@@ -9,7 +9,12 @@ import type {
   SortMode,
 } from './types.js';
 import { evaluateCustomRuleExpression } from './custom-rule.js';
+import { MAX_NAME_LENGTH, MAX_PAD_WIDTH, MAX_REGEX_PATTERN_LENGTH } from './limits.js';
+import { getPathApi, isCaseInsensitive, normalizeFsPath, normalizePathKey } from './path-key.js';
 import { sortItemsByMode } from './sort.js';
+
+export { normalizePathKey } from './path-key.js';
+export * from './limits.js';
 
 export interface NameParts {
   stem: string;
@@ -30,43 +35,27 @@ export interface ApplyRulesContext {
   originalName: string;
   parentPath: string;
   sourcePath?: string;
+  /** Selects the path flavour used for `{parent}` and custom-rule paths. Defaults to the host. */
+  platform?: PlatformTarget;
 }
 
+// Windows treats these device names as reserved regardless of extension, e.g. `CON.tar.gz`
+// and `nul .txt`. Superscript digits are matched by Windows for COM/LPT as well.
 const WINDOWS_RESERVED_NAMES = new Set([
   'con',
   'prn',
   'aux',
   'nul',
-  'com1',
-  'com2',
-  'com3',
-  'com4',
-  'com5',
-  'com6',
-  'com7',
-  'com8',
-  'com9',
-  'lpt1',
-  'lpt2',
-  'lpt3',
-  'lpt4',
-  'lpt5',
-  'lpt6',
-  'lpt7',
-  'lpt8',
-  'lpt9',
+  'conin$',
+  'conout$',
+  ...['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '\u00b9', '\u00b2', '\u00b3'].flatMap((suffix) => [
+    `com${suffix}`,
+    `lpt${suffix}`,
+  ]),
 ]);
 
-function isCaseInsensitive(platform: PlatformTarget) {
-  return platform === 'darwin' || platform === 'win32';
-}
-
-export function normalizePathKey(candidatePath: string, platform: PlatformTarget) {
-  return isCaseInsensitive(platform) ? candidatePath.toLocaleLowerCase() : candidatePath;
-}
-
 function normalizeNameKey(name: string, platform: PlatformTarget) {
-  return isCaseInsensitive(platform) ? name.toLocaleLowerCase() : name;
+  return normalizePathKey(name, platform);
 }
 
 export function splitName(name: string, isDirectory: boolean): NameParts {
@@ -222,6 +211,10 @@ function parseLetterSequenceCasing(argument?: string): 'upper' | 'lower' {
   return normalizedArgument === 'lower' || normalizedArgument === 'a' ? 'lower' : 'upper';
 }
 
+function resolvePathApi(platform: PlatformTarget | undefined) {
+  return platform ? getPathApi(platform) : path;
+}
+
 function renderNewNameTemplate(
   template: string,
   currentParts: NameParts,
@@ -232,7 +225,7 @@ function renderNewNameTemplate(
   reverseSequence = false,
 ) {
   const originalParts = splitName(originalName, isDirectory);
-  const parentName = path.basename(context.parentPath);
+  const parentName = resolvePathApi(context.platform).basename(context.parentPath);
   const sequenceIndex = reverseSequence ? Math.max(0, context.total - context.index - 1) : context.index;
   const letterSequenceValue = context.index + 1;
   const reverseLetterSequenceValue = Math.max(1, context.total - context.index);
@@ -270,12 +263,187 @@ function renderNewNameTemplate(
   });
 }
 
-export function applyRulesToName(
+function describeRule(rule: RenameRule) {
+  const label = rule.label?.trim();
+  return `Rule "${label || rule.type}"`;
+}
+
+function compileUserRegExp(pattern: string, flags: string) {
+  if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
+    throw new Error(`Regular expression is longer than ${MAX_REGEX_PATTERN_LENGTH} characters.`);
+  }
+
+  return new RegExp(pattern, flags);
+}
+
+function assertFiniteSequenceNumbers(start: number, step: number) {
+  if (!Number.isFinite(start) || !Number.isFinite(step)) {
+    throw new Error('Sequence start and step must be finite numbers.');
+  }
+}
+
+function resolvePadWidth(padWidth: number | undefined) {
+  const width = padWidth ?? 0;
+  if (!Number.isFinite(width) || width > MAX_PAD_WIDTH) {
+    throw new Error(`Pad width must be a number no greater than ${MAX_PAD_WIDTH}.`);
+  }
+
+  return Math.max(0, Math.floor(width));
+}
+
+function formatPaddedNumber(value: number, padWidth: number) {
+  const digits = String(Math.abs(value)).padStart(padWidth, '0');
+  return value < 0 ? `-${digits}` : digits;
+}
+
+function applyRule(
+  rule: RenameRule,
+  parts: NameParts,
+  originalName: string,
+  isDirectory: boolean,
+  context: ApplyRulesContext,
+  now: Date,
+): NameParts {
+  switch (rule.type) {
+    case 'new_name':
+      return {
+        stem: renderNewNameTemplate(
+          rule.template,
+          parts,
+          originalName,
+          isDirectory,
+          context,
+          now,
+          rule.reverseSequence,
+        ),
+        extension: parts.extension,
+      };
+    case 'custom_rule': {
+      try {
+        const pathApi = resolvePathApi(context.platform);
+        const originalParts = splitName(originalName, isDirectory);
+        const nextName = evaluateCustomRuleExpression(
+          rule.expression,
+          {
+            currentName: joinName(parts, isDirectory),
+            currentStem: parts.stem,
+            extension: parts.extension,
+            originalName,
+            originalStem: originalParts.stem,
+            originalExtension: originalParts.extension,
+            parent: pathApi.basename(context.parentPath),
+            sourcePath: context.sourcePath ?? pathApi.join(context.parentPath, originalName),
+            isDirectory,
+            index: context.index + 1,
+            zeroIndex: context.index,
+            total: context.total,
+          },
+          { pathApi },
+        );
+        return splitName(nextName, isDirectory);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Custom rule failed.';
+        throw new RenameRuleExecutionError(`Custom rule failed: ${message}`, joinName(parts, isDirectory));
+      }
+    }
+    case 'find_replace': {
+      if (!rule.find) {
+        return parts;
+      }
+
+      if (rule.useRegex) {
+        const flags = `${rule.matchCase ? '' : 'i'}${rule.replaceAll ? 'g' : ''}`;
+        const expression = compileUserRegExp(rule.find, flags);
+        return { ...parts, stem: parts.stem.replace(expression, rule.replace) };
+      }
+
+      // Literal replacement: a function replacer keeps `$` sequences in `replace` verbatim.
+      if (rule.matchCase) {
+        const stem = rule.replaceAll
+          ? parts.stem.replaceAll(rule.find, () => rule.replace)
+          : parts.stem.replace(rule.find, () => rule.replace);
+        return { ...parts, stem };
+      }
+
+      // Case-insensitive matching runs on the original string so match offsets stay valid even
+      // when lowercasing changes string length (for example `İ`).
+      const expression = new RegExp(escapeRegExp(rule.find), rule.replaceAll ? 'giu' : 'iu');
+      return { ...parts, stem: parts.stem.replace(expression, () => rule.replace) };
+    }
+    case 'prefix_suffix':
+      return { ...parts, stem: `${rule.prefix}${parts.stem}${rule.suffix}` };
+    case 'case_transform':
+      return { ...parts, stem: applyCaseTransform(parts.stem, rule.mode) };
+    case 'trim_text':
+      switch (rule.mode) {
+        case 'trim':
+          return { ...parts, stem: parts.stem.trim() };
+        case 'trim_start':
+          return { ...parts, stem: parts.stem.trimStart() };
+        case 'trim_end':
+          return { ...parts, stem: parts.stem.trimEnd() };
+        case 'collapse_spaces':
+          return { ...parts, stem: parts.stem.replace(/\s+/g, ' ').trim() };
+        case 'remove_spaces':
+          return { ...parts, stem: parts.stem.replace(/\s+/g, '') };
+        case 'remove_dashes':
+          return { ...parts, stem: parts.stem.replace(/-/g, '') };
+        case 'remove_underscores':
+          return { ...parts, stem: parts.stem.replace(/_/g, '') };
+      }
+      return parts;
+    case 'remove_text': {
+      if (!rule.text) {
+        return parts;
+      }
+      const expression = new RegExp(escapeRegExp(rule.text), rule.matchCase ? 'gu' : 'giu');
+      return { ...parts, stem: parts.stem.replace(expression, '') };
+    }
+    case 'sequence_insert': {
+      assertFiniteSequenceNumbers(rule.start, rule.step);
+      const padWidth = resolvePadWidth(rule.padWidth);
+      const rawNumber = rule.start + context.index * rule.step;
+      const sequence = formatPaddedNumber(rawNumber, padWidth);
+      return applyTokenAtPosition(parts, isDirectory, rule.position, sequence, rule.separator);
+    }
+    case 'letter_sequence_insert': {
+      assertFiniteSequenceNumbers(rule.start, rule.step);
+      const rawNumber = rule.start + context.index * rule.step;
+      const sequence = formatLetterSequence(rawNumber, rule.casing);
+      return applyTokenAtPosition(parts, isDirectory, rule.position, sequence, rule.separator);
+    }
+    case 'date_time': {
+      const token = formatDateToken(now, rule.format);
+      return applyTokenAtPosition(parts, isDirectory, rule.position, token, rule.separator);
+    }
+    case 'extension_handling':
+      if (isDirectory) {
+        return parts;
+      }
+      switch (rule.mode) {
+        case 'keep':
+          return parts;
+        case 'lowercase':
+          return { ...parts, extension: parts.extension.toLowerCase() };
+        case 'uppercase':
+          return { ...parts, extension: parts.extension.toUpperCase() };
+        case 'replace':
+          return { ...parts, extension: rule.replacement.replace(/^\./, '') };
+        case 'remove':
+          return { ...parts, extension: '' };
+      }
+      return parts;
+  }
+
+  return parts;
+}
+
+function applyRulesToParts(
   originalName: string,
   isDirectory: boolean,
   rules: RenameRule[],
   context: ApplyRulesContext,
-  now = new Date(),
+  now: Date,
 ) {
   let parts = splitName(originalName, isDirectory);
 
@@ -284,179 +452,53 @@ export function applyRulesToName(
       continue;
     }
 
-    switch (rule.type) {
-      case 'new_name':
-        parts.stem = renderNewNameTemplate(
-          rule.template,
-          parts,
-          originalName,
-          isDirectory,
-          context,
-          now,
-          rule.reverseSequence,
-        );
-        break;
-      case 'custom_rule': {
-        try {
-          const originalParts = splitName(originalName, isDirectory);
-          const nextName = evaluateCustomRuleExpression(rule.expression, {
-            currentName: joinName(parts, isDirectory),
-            currentStem: parts.stem,
-            extension: parts.extension,
-            originalName,
-            originalStem: originalParts.stem,
-            originalExtension: originalParts.extension,
-            parent: path.basename(context.parentPath),
-            sourcePath: context.sourcePath ?? path.join(context.parentPath, originalName),
-            isDirectory,
-            index: context.index + 1,
-            zeroIndex: context.index,
-            total: context.total,
-          });
-          parts = splitName(nextName, isDirectory);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Custom rule failed.';
-          throw new RenameRuleExecutionError(`Custom rule failed: ${message}`, joinName(parts, isDirectory));
-        }
-        break;
+    try {
+      parts = applyRule(rule, parts, originalName, isDirectory, context, now);
+    } catch (error) {
+      if (error instanceof RenameRuleExecutionError) {
+        throw error;
       }
-      case 'find_replace': {
-        if (!rule.find) {
-          break;
-        }
-
-        if (rule.useRegex) {
-          const flags = `${rule.matchCase ? '' : 'i'}${rule.replaceAll ? 'g' : ''}`;
-          const expression = new RegExp(rule.find, flags);
-          parts.stem = parts.stem.replace(expression, rule.replace);
-        } else {
-          const haystack = rule.matchCase ? parts.stem : parts.stem.toLocaleLowerCase();
-          const needle = rule.matchCase ? rule.find : rule.find.toLocaleLowerCase();
-
-          if (!needle) {
-            break;
-          }
-
-          if (rule.replaceAll) {
-            let offset = 0;
-            let nextStem = '';
-            while (true) {
-              const matchIndex = haystack.indexOf(needle, offset);
-              if (matchIndex === -1) {
-                nextStem += parts.stem.slice(offset);
-                break;
-              }
-
-              nextStem += parts.stem.slice(offset, matchIndex) + rule.replace;
-              offset = matchIndex + needle.length;
-            }
-            parts.stem = nextStem;
-          } else {
-            const matchIndex = haystack.indexOf(needle);
-            if (matchIndex !== -1) {
-              parts.stem =
-                parts.stem.slice(0, matchIndex) +
-                rule.replace +
-                parts.stem.slice(matchIndex + needle.length);
-            }
-          }
-        }
-        break;
-      }
-      case 'prefix_suffix':
-        parts.stem = `${rule.prefix}${parts.stem}${rule.suffix}`;
-        break;
-      case 'case_transform':
-        parts.stem = applyCaseTransform(parts.stem, rule.mode);
-        break;
-      case 'trim_text':
-        switch (rule.mode) {
-          case 'trim':
-            parts.stem = parts.stem.trim();
-            break;
-          case 'trim_start':
-            parts.stem = parts.stem.trimStart();
-            break;
-          case 'trim_end':
-            parts.stem = parts.stem.trimEnd();
-            break;
-          case 'collapse_spaces':
-            parts.stem = parts.stem.replace(/\s+/g, ' ').trim();
-            break;
-          case 'remove_spaces':
-            parts.stem = parts.stem.replace(/\s+/g, '');
-            break;
-          case 'remove_dashes':
-            parts.stem = parts.stem.replace(/-/g, '');
-            break;
-          case 'remove_underscores':
-            parts.stem = parts.stem.replace(/_/g, '');
-            break;
-        }
-        break;
-      case 'remove_text': {
-        if (!rule.text) {
-          break;
-        }
-        const expression = new RegExp(escapeRegExp(rule.text), rule.matchCase ? 'g' : 'gi');
-        parts.stem = parts.stem.replace(expression, '');
-        break;
-      }
-      case 'sequence_insert': {
-        const rawNumber = rule.start + context.index * rule.step;
-        const sequence = String(rawNumber).padStart(rule.padWidth, '0');
-        parts = applyTokenAtPosition(parts, isDirectory, rule.position, sequence, rule.separator);
-        break;
-      }
-      case 'letter_sequence_insert': {
-        const rawNumber = rule.start + context.index * rule.step;
-        const sequence = formatLetterSequence(rawNumber, rule.casing);
-        parts = applyTokenAtPosition(parts, isDirectory, rule.position, sequence, rule.separator);
-        break;
-      }
-      case 'date_time': {
-        const token = formatDateToken(now, rule.format);
-        parts = applyTokenAtPosition(parts, isDirectory, rule.position, token, rule.separator);
-        break;
-      }
-      case 'extension_handling':
-        if (isDirectory) {
-          break;
-        }
-        switch (rule.mode) {
-          case 'keep':
-            break;
-          case 'lowercase':
-            parts.extension = parts.extension.toLowerCase();
-            break;
-          case 'uppercase':
-            parts.extension = parts.extension.toUpperCase();
-            break;
-          case 'replace':
-            parts.extension = rule.replacement.replace(/^\./, '');
-            break;
-          case 'remove':
-            parts.extension = '';
-            break;
-        }
-        break;
+      const message = error instanceof Error ? error.message : 'Unknown error.';
+      throw new RenameRuleExecutionError(
+        `${describeRule(rule)} failed: ${message}`,
+        joinName(parts, isDirectory),
+      );
     }
   }
 
-  return joinName(parts, isDirectory);
+  return parts;
+}
+
+/**
+ * Applies the enabled rules in order. Throws when a rule cannot be applied (for example an
+ * invalid regular expression); `generatePreview` reports such failures as invalid rows instead.
+ */
+export function applyRulesToName(
+  originalName: string,
+  isDirectory: boolean,
+  rules: RenameRule[],
+  context: ApplyRulesContext,
+  now = new Date(),
+) {
+  return joinName(applyRulesToParts(originalName, isDirectory, rules, context, now), isDirectory);
 }
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function validateName(name: string, platform: PlatformTarget, isDirectory: boolean) {
+const utf8Encoder = new TextEncoder();
+
+function validateName(name: string, platform: PlatformTarget) {
   const issues: string[] = [];
   if (!name.trim()) {
     issues.push('Name is empty.');
   }
-  if (name.includes('/') || name.includes('\0')) {
+  if (name.includes('/')) {
     issues.push('Name contains unsupported path characters.');
+  }
+  if (/[\x00-\x1f]/.test(name)) {
+    issues.push('Name contains control characters.');
   }
 
   if (platform === 'win32') {
@@ -466,10 +508,16 @@ function validateName(name: string, platform: PlatformTarget, isDirectory: boole
     if (/[. ]$/.test(name)) {
       issues.push('Windows names cannot end with a space or period.');
     }
-    const basename = isDirectory ? name : splitName(name, false).stem;
-    if (WINDOWS_RESERVED_NAMES.has(basename.toLowerCase())) {
+    // Windows ignores everything from the first dot and trailing spaces when matching device names.
+    const deviceName = name.split('.')[0].replace(/ +$/, '').toLowerCase();
+    if (WINDOWS_RESERVED_NAMES.has(deviceName)) {
       issues.push('Name is reserved on Windows.');
     }
+    if (name.length > MAX_NAME_LENGTH) {
+      issues.push(`Name is longer than ${MAX_NAME_LENGTH} characters.`);
+    }
+  } else if (utf8Encoder.encode(name).length > MAX_NAME_LENGTH) {
+    issues.push(`Name is longer than ${MAX_NAME_LENGTH} bytes.`);
   }
 
   if (name === '.' || name === '..') {
@@ -479,85 +527,156 @@ function validateName(name: string, platform: PlatformTarget, isDirectory: boole
   return issues;
 }
 
+interface PlannedItem {
+  item: ResolvedRenameItem;
+  sourcePath: string;
+  parentPath: string;
+  sourceKey: string;
+  proposedName: string;
+  reasons: string[];
+}
+
 export function generatePreview(options: GeneratePreviewOptions): PreviewResult {
   const { items, rules, platform, sortMode, existingPathExists } = options;
-  const rowMap = new Map<string, PreviewRow>();
-  const sourceKeys = new Set<string>();
+  const pathApi = getPathApi(platform);
+  const now = new Date();
   const existingCache = new Map<string, boolean>();
-  const resolvedDirectoryCache = new Map<string, string>();
   const invalidIds = new Set<string>();
   const conflictIds = new Set<string>();
 
-  const orderedItems = sortItemsByMode(items, sortMode);
+  const orderedItems = sortItemsByMode(items, sortMode, { platform });
 
-  for (const item of orderedItems) {
-    const sourceKey = normalizePathKey(item.sourcePath, platform);
-    sourceKeys.add(sourceKey);
-  }
-
-  const resolveDirectoryPath = (directoryPath: string): string => {
-    const directoryKey = normalizePathKey(directoryPath, platform);
-    const cached = resolvedDirectoryCache.get(directoryKey);
-    if (cached) {
-      return cached;
-    }
-
-    const directoryRow = rowMap.get(directoryKey);
-    if (directoryRow) {
-      resolvedDirectoryCache.set(directoryKey, directoryRow.nextPath);
-      return directoryRow.nextPath;
-    }
-
-    const parentPath = path.dirname(directoryPath);
-    if (parentPath === directoryPath) {
-      resolvedDirectoryCache.set(directoryKey, directoryPath);
-      return directoryPath;
-    }
-
-    const resolvedParentPath = resolveDirectoryPath(parentPath);
-    const resolved =
-      resolvedParentPath === parentPath
-        ? directoryPath
-        : path.join(resolvedParentPath, path.basename(directoryPath));
-    resolvedDirectoryCache.set(directoryKey, resolved);
-    return resolved;
-  };
-
-  const resolveFinalDirectoryPath = (item: ResolvedRenameItem): string => {
-    return resolveDirectoryPath(item.parentPath);
-  };
-
-  orderedItems.forEach((item, index) => {
+  // Phase 1: compute every proposed name. Target paths are resolved afterwards so that a child
+  // never depends on whether its parent row happened to be processed first.
+  const plannedItems = orderedItems.map((item, index): PlannedItem => {
+    const sourcePath = normalizeFsPath(item.sourcePath, platform);
+    const parentPath = normalizeFsPath(item.parentPath, platform);
+    const reasons: string[] = [];
     let proposedName = item.name;
-    const executionReasons: string[] = [];
 
     try {
-      proposedName = applyRulesToName(item.name, item.isDirectory, rules, {
-        index,
-        total: orderedItems.length,
-        originalName: item.name,
-        parentPath: item.parentPath,
-        sourcePath: item.sourcePath,
-      });
+      const parts = applyRulesToParts(
+        item.name,
+        item.isDirectory,
+        rules,
+        {
+          index,
+          total: orderedItems.length,
+          originalName: item.name,
+          parentPath: item.parentPath,
+          sourcePath: item.sourcePath,
+          platform,
+        },
+        now,
+      );
+      proposedName = joinName(parts, item.isDirectory);
+      if (
+        !item.isDirectory &&
+        parts.extension &&
+        !parts.stem.trim() &&
+        splitName(item.name, false).stem.trim()
+      ) {
+        reasons.push('Name is empty; only the extension would remain.');
+      }
     } catch (error) {
       if (error instanceof RenameRuleExecutionError) {
         proposedName = error.currentName;
-        executionReasons.push(error.message);
+        reasons.push(error.message);
       } else {
-        throw error;
+        reasons.push(`Rename rules failed: ${error instanceof Error ? error.message : 'Unknown error.'}`);
       }
     }
 
-    const finalDirectoryPath = resolveFinalDirectoryPath(item);
-    const nextPath = path.join(finalDirectoryPath, proposedName);
-    const changed = item.sourcePath !== nextPath;
-    const reasons = [...executionReasons, ...validateName(proposedName, platform, item.isDirectory)];
-    const rowId = normalizePathKey(item.sourcePath, platform);
+    for (const issue of validateName(proposedName, platform)) {
+      if (!reasons.includes(issue)) {
+        reasons.push(issue);
+      }
+    }
+
+    return {
+      item,
+      sourcePath,
+      parentPath,
+      sourceKey: normalizePathKey(sourcePath, platform),
+      proposedName,
+      reasons,
+    };
+  });
+
+  const ownerByKey = new Map<string, PlannedItem>();
+  const sourceKeyCounts = new Map<string, number>();
+  for (const planned of plannedItems) {
+    sourceKeyCounts.set(planned.sourceKey, (sourceKeyCounts.get(planned.sourceKey) ?? 0) + 1);
+    if (!ownerByKey.has(planned.sourceKey)) {
+      ownerByKey.set(planned.sourceKey, planned);
+    }
+  }
+
+  // Phase 2: resolve targets from the parent rows' computed targets.
+  const targetCache = new Map<PlannedItem, string>();
+  const directoryCache = new Map<string, string>();
+
+  const resolveDirectoryPath = (directoryPath: string): string => {
+    const directoryKey = normalizePathKey(directoryPath, platform);
+    const cached = directoryCache.get(directoryKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let resolved: string;
+    const owner = ownerByKey.get(directoryKey);
+    if (owner?.item.isDirectory) {
+      resolved = resolveTargetPath(owner);
+    } else {
+      const parentPath = pathApi.dirname(directoryPath);
+      if (parentPath === directoryPath) {
+        resolved = directoryPath;
+      } else {
+        const resolvedParentPath = resolveDirectoryPath(parentPath);
+        resolved =
+          resolvedParentPath === parentPath
+            ? directoryPath
+            : pathApi.join(resolvedParentPath, pathApi.basename(directoryPath));
+      }
+    }
+
+    directoryCache.set(directoryKey, resolved);
+    return resolved;
+  };
+
+  const resolveFinalDirectoryPath = (planned: PlannedItem) =>
+    resolveDirectoryPath(pathApi.dirname(planned.sourcePath));
+
+  const resolveTargetPath = (planned: PlannedItem): string => {
+    const cached = targetCache.get(planned);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const nextPath = pathApi.join(resolveFinalDirectoryPath(planned), planned.proposedName);
+    targetCache.set(planned, nextPath);
+    return nextPath;
+  };
+
+  const seenIdCounts = new Map<string, number>();
+  const rows = plannedItems.map((planned): PreviewRow => {
+    const { item, sourcePath, parentPath, sourceKey, proposedName, reasons } = planned;
+    const occurrence = (seenIdCounts.get(sourceKey) ?? 0) + 1;
+    seenIdCounts.set(sourceKey, occurrence);
+    const rowId = occurrence === 1 ? sourceKey : `${sourceKey}#${occurrence}`;
+
+    const finalDirectoryPath = resolveFinalDirectoryPath(planned);
+    const nextPath = resolveTargetPath(planned);
     if (reasons.length > 0) {
       invalidIds.add(rowId);
     }
 
-    const row: PreviewRow = {
+    if ((sourceKeyCounts.get(sourceKey) ?? 0) > 1) {
+      conflictIds.add(rowId);
+      reasons.push('Another item in the batch has the same source path.');
+    }
+
+    return {
       id: rowId,
       sourcePath: item.sourcePath,
       nextPath,
@@ -565,33 +684,31 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
       proposedName,
       directoryPath: item.parentPath,
       finalDirectoryPath,
-      pathContext: path.relative(item.parentPath, nextPath) || proposedName,
+      pathContext: pathApi.relative(parentPath, nextPath) || proposedName,
       isDirectory: item.isDirectory,
-      changed,
+      changed: sourcePath !== nextPath,
       status: 'unchanged',
       reasons,
     };
-
-    rowMap.set(row.id, row);
   });
 
-  const destinationMap = new Map<string, PreviewRow[]>();
-  for (const row of rowMap.values()) {
-    const nextKey = normalizePathKey(row.nextPath, platform);
-    const rows = destinationMap.get(nextKey) ?? [];
-    rows.push(row);
-    destinationMap.set(nextKey, rows);
-  }
+  // Rows that share a source path are already reported above; count distinct sources only.
+  const destinationSources = new Map<string, Set<string>>();
+  plannedItems.forEach((planned, index) => {
+    const nextKey = normalizePathKey(rows[index].nextPath, platform);
+    const sources = destinationSources.get(nextKey) ?? new Set<string>();
+    sources.add(planned.sourceKey);
+    destinationSources.set(nextKey, sources);
+  });
 
-  for (const row of rowMap.values()) {
+  for (const row of rows) {
     const nextKey = normalizePathKey(row.nextPath, platform);
-    const destinationRows = destinationMap.get(nextKey) ?? [];
 
     if (invalidIds.has(row.id)) {
       continue;
     }
 
-    if (destinationRows.length > 1) {
+    if ((destinationSources.get(nextKey)?.size ?? 0) > 1) {
       conflictIds.add(row.id);
       row.reasons.push('Another item in the batch resolves to the same final path.');
     }
@@ -603,14 +720,13 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
         existingCache.set(nextKey, exists);
       }
 
-      if (exists && !sourceKeys.has(nextKey)) {
+      if (exists && !ownerByKey.has(nextKey)) {
         conflictIds.add(row.id);
         row.reasons.push('Target path already exists outside the current batch.');
       }
     }
 
     if (
-      !invalidIds.has(row.id) &&
       !conflictIds.has(row.id) &&
       row.changed &&
       isCaseInsensitive(platform) &&
@@ -620,7 +736,6 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
     }
   }
 
-  const rows = [...rowMap.values()];
   for (const row of rows) {
     row.status = invalidIds.has(row.id)
       ? 'invalid'

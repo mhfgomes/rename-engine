@@ -1,8 +1,33 @@
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { applyRulesToName, generatePreview } from './rename-engine.js';
-import type { RenameRule, ResolvedRenameItem } from './types.js';
+import { applyRulesToName, generatePreview, normalizePathKey } from './rename-engine.js';
+import type { PlatformTarget, RenameRule, ResolvedRenameItem } from './types.js';
+
+function fileItem(parentPath: string, name: string, isDirectory = false): ResolvedRenameItem {
+  return { sourcePath: `${parentPath}/${name}`, name, parentPath, isDirectory };
+}
+
+function previewOne(
+  name: string,
+  rules: RenameRule[],
+  platform: PlatformTarget = 'linux',
+  isDirectory = false,
+) {
+  return generatePreview({
+    items: [fileItem('/d', name, isDirectory)],
+    rules,
+    platform,
+    sortMode: 'natural_path',
+  }).rows[0];
+}
+
+const renameTo = (expression: string): RenameRule => ({
+  id: 'custom',
+  type: 'custom_rule',
+  enabled: true,
+  expression,
+});
 
 describe('applyRulesToName', () => {
   it('applies ordered transforms without mutating the extension', () => {
@@ -652,5 +677,255 @@ describe('generatePreview', () => {
 
     expect(preview.rows[0].status).toBe('ok');
     expect(preview.rows[0].reasons.join(' ')).toContain('Case-only rename');
+  });
+
+  it('treats NFC and NFD spellings as the same path on every platform', () => {
+    const nfd = 'e\u0301.txt';
+    const nfc = '\u00e9.txt';
+    expect(normalizePathKey(`/d/${nfd}`, 'linux')).toBe(normalizePathKey(`/d/${nfc}`, 'linux'));
+
+    for (const platform of ['darwin', 'win32', 'linux'] as const) {
+      const preview = generatePreview({
+        items: [fileItem('/d', nfd), fileItem('/d', 'x.txt')],
+        rules: [renameTo(`when(originalStem == "x", "${nfc}", currentName)`)],
+        platform,
+        sortMode: 'natural_path',
+      });
+      expect(preview.rows.map((row) => row.status)).toEqual(['conflict', 'conflict']);
+    }
+  });
+
+  it('reports duplicate source paths as conflicts instead of merging them', () => {
+    const preview = generatePreview({
+      items: [fileItem('/d', 'A.txt'), fileItem('/d', 'a.txt')],
+      rules: [],
+      platform: 'darwin',
+      sortMode: 'natural_path',
+    });
+
+    expect(preview.summary.total).toBe(2);
+    expect(preview.summary.conflict).toBe(2);
+    expect(new Set(preview.rows.map((row) => row.id)).size).toBe(2);
+    expect(preview.rows[0].reasons).toContain('Another item in the batch has the same source path.');
+
+    const linuxPreview = generatePreview({
+      items: [fileItem('/d', 'A.txt'), fileItem('/d', 'a.txt')],
+      rules: [],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+    expect(linuxPreview.summary.unchanged).toBe(2);
+    expect(linuxPreview.summary.blocked).toBe(false);
+  });
+
+  it('turns rule configuration errors into invalid rows instead of throwing', () => {
+    const invalidRegex = previewOne('alpha.txt', [
+      {
+        id: 'regex',
+        type: 'find_replace',
+        enabled: true,
+        find: '[',
+        replace: '-',
+        matchCase: false,
+        useRegex: true,
+        replaceAll: true,
+      },
+    ]);
+    expect(invalidRegex.status).toBe('invalid');
+    expect(invalidRegex.reasons.join(' ')).toMatch(/find_replace.*failed/);
+    expect(invalidRegex.proposedName).toBe('alpha.txt');
+
+    const hugePad = previewOne('alpha.txt', [
+      {
+        id: 'seq',
+        type: 'sequence_insert',
+        enabled: true,
+        position: 'prefix',
+        start: 1,
+        step: 1,
+        padWidth: 1e10,
+        separator: '_',
+      },
+    ]);
+    expect(hugePad.status).toBe('invalid');
+    expect(hugePad.reasons.join(' ')).toContain('Pad width');
+
+    const infiniteLetters = previewOne('alpha.txt', [
+      {
+        id: 'letters',
+        type: 'letter_sequence_insert',
+        enabled: true,
+        position: 'prefix',
+        start: Number.POSITIVE_INFINITY,
+        step: 1,
+        casing: 'upper',
+        separator: '_',
+      },
+    ]);
+    expect(infiniteLetters.status).toBe('invalid');
+  });
+
+  it('caps sequence pad width', () => {
+    const rule = (padWidth: number): RenameRule => ({
+      id: 'seq',
+      type: 'sequence_insert',
+      enabled: true,
+      position: 'prefix',
+      start: 1,
+      step: 1,
+      padWidth,
+      separator: '',
+    });
+    expect(previewOne('a.txt', [rule(256)]).status).toBe('invalid');
+    expect(previewOne('a.txt', [rule(5)]).proposedName).toBe('00001a.txt');
+  });
+
+  it('rejects patterns longer than the regex length limit', () => {
+    const row = previewOne('alpha.txt', [
+      {
+        id: 'regex',
+        type: 'find_replace',
+        enabled: true,
+        find: 'a'.repeat(1001),
+        replace: '-',
+        matchCase: false,
+        useRegex: true,
+        replaceAll: true,
+      },
+    ]);
+    expect(row.status).toBe('invalid');
+    expect(row.reasons.join(' ')).toContain('longer than 1000 characters');
+  });
+
+  it('validates Windows reserved device names from the first dot', () => {
+    for (const name of ['CON.tar.gz', 'nul .txt', 'COM0.txt', 'lpt0', 'COM\u00b9.txt', 'LPT\u00b3', 'CONIN$', 'conout$.log']) {
+      expect(previewOne(name, [], 'win32').reasons).toContain('Name is reserved on Windows.');
+    }
+    expect(previewOne('AUX.d', [], 'win32', true).reasons).toContain('Name is reserved on Windows.');
+    expect(previewOne('console.txt', [], 'win32').reasons).toEqual([]);
+    expect(previewOne('CON.tar.gz', [], 'linux').reasons).toEqual([]);
+  });
+
+  it('rejects control characters on every platform', () => {
+    for (const platform of ['linux', 'darwin', 'win32'] as const) {
+      const row = previewOne('a.txt', [{ id: 'p', type: 'prefix_suffix', enabled: true, prefix: '\u0007', suffix: '' }], platform);
+      expect(row.status).toBe('invalid');
+      expect(row.reasons).toContain('Name contains control characters.');
+    }
+  });
+
+  it('enforces name length limits per platform', () => {
+    const suffix = (value: string): RenameRule => ({
+      id: 's',
+      type: 'prefix_suffix',
+      enabled: true,
+      prefix: '',
+      suffix: value,
+    });
+    // 128 two-byte characters + ".txt" = 260 UTF-8 bytes but only 132 UTF-16 units.
+    const wide = '\u00e9'.repeat(128);
+    expect(previewOne('a.txt', [suffix(wide)], 'linux').reasons).toContain('Name is longer than 255 bytes.');
+    expect(previewOne('a.txt', [suffix(wide)], 'darwin').status).toBe('invalid');
+    expect(previewOne('a.txt', [suffix(wide)], 'win32').status).toBe('ok');
+    expect(previewOne('a.txt', [suffix('b'.repeat(251))], 'win32').reasons).toContain(
+      'Name is longer than 255 characters.',
+    );
+    expect(previewOne('a.txt', [suffix('b'.repeat(250))], 'linux').status).toBe('ok');
+  });
+
+  it('keeps match offsets correct for case-insensitive literal replacement', () => {
+    const rule = (replaceAll: boolean): RenameRule => ({
+      id: 'replace',
+      type: 'find_replace',
+      enabled: true,
+      find: 'a',
+      replace: '-',
+      matchCase: false,
+      useRegex: false,
+      replaceAll,
+    });
+    expect(previewOne('\u0130xab.txt', [rule(false)]).proposedName).toBe('\u0130x-b.txt');
+    expect(previewOne('\u0130xAbA.txt', [rule(true)]).proposedName).toBe('\u0130x-b-.txt');
+    expect(
+      previewOne('cost.txt', [
+        { id: 'r', type: 'find_replace', enabled: true, find: 'COST', replace: '$&$1', matchCase: false, useRegex: false, replaceAll: true },
+      ]).proposedName,
+    ).toBe('$&$1.txt');
+  });
+
+  it('pads the absolute value of negative sequence numbers', () => {
+    const preview = generatePreview({
+      items: [fileItem('/d', 'a.txt'), fileItem('/d', 'b.txt'), fileItem('/d', 'c.txt')],
+      rules: [
+        {
+          id: 'seq',
+          type: 'sequence_insert',
+          enabled: true,
+          position: 'prefix',
+          start: 0,
+          step: -1,
+          padWidth: 3,
+          separator: '_',
+        },
+      ],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+    expect(preview.rows.map((row) => row.proposedName)).toEqual(['000_a.txt', '-001_b.txt', '-002_c.txt']);
+  });
+
+  it('does not report non-normalized source paths as renames', () => {
+    const preview = generatePreview({
+      items: [
+        { sourcePath: '/d//a.txt', name: 'a.txt', parentPath: '/d', isDirectory: false },
+        { sourcePath: '/d/./sub/', name: 'sub', parentPath: '/d/', isDirectory: true },
+      ],
+      rules: [],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+    expect(preview.rows.map((row) => row.status)).toEqual(['unchanged', 'unchanged']);
+    expect(preview.summary.changed).toBe(0);
+  });
+
+  it('marks a rule that empties the stem as invalid', () => {
+    const row = previewOne('abc.txt', [
+      { id: 'remove', type: 'remove_text', enabled: true, text: 'abc', matchCase: true },
+    ]);
+    expect(row.proposedName).toBe('.txt');
+    expect(row.status).toBe('invalid');
+    expect(row.reasons.join(' ')).toContain('Name is empty');
+
+    expect(previewOne('.bashrc', []).status).toBe('unchanged');
+  });
+
+  it('uses the path flavour of the target platform', () => {
+    const preview = generatePreview({
+      items: [
+        { sourcePath: 'C:\\Data\\Parent', name: 'Parent', parentPath: 'C:\\Data', isDirectory: true },
+        { sourcePath: 'C:\\Data\\Parent\\Report.txt', name: 'Report.txt', parentPath: 'C:\\Data\\Parent', isDirectory: false },
+      ],
+      rules: [
+        { id: 'lower', type: 'case_transform', enabled: true, mode: 'snake' },
+        renameTo('currentStem + "_" + parent + ext(extension)'),
+      ],
+      platform: 'win32',
+      sortMode: 'natural_path',
+    });
+
+    expect(preview.rows.map((row) => row.nextPath)).toEqual([
+      'C:\\Data\\parent_Data',
+      'C:\\Data\\parent_Data\\report_Parent.txt',
+    ]);
+    expect(preview.rows[1].finalDirectoryPath).toBe('C:\\Data\\parent_Data');
+
+    const posix = generatePreview({
+      items: [{ sourcePath: '/d/a\\b.txt', name: 'a\\b.txt', parentPath: '/d', isDirectory: false }],
+      rules: [renameTo('basename(sourcePath)')],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+    expect(posix.rows[0].nextPath).toBe('/d/a\\b.txt');
+    expect(posix.rows[0].status).toBe('unchanged');
   });
 });
