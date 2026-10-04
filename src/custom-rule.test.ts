@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateCustomRuleExpression } from './custom-rule.js';
+import path from 'node:path';
+import { evaluateCustomRuleExpression, getCompiledExpressionCacheSize } from './custom-rule.js';
 
 const baseContext = {
   currentName: 'My File.txt',
   currentStem: 'My File',
-  extension: '.txt',
+  extension: 'txt',
   originalName: 'My File.txt',
   originalStem: 'My File',
-  originalExtension: '.txt',
+  originalExtension: 'txt',
   parent: '/tmp',
   sourcePath: '/tmp/My File.txt',
   isDirectory: false,
@@ -42,5 +43,48 @@ describe('evaluateCustomRuleExpression', () => {
     expect(() =>
       evaluateCustomRuleExpression('regexReplace(currentStem, "[", "-")', baseContext),
     ).toThrow(/regexReplace failed/);
+  });
+
+  it('passes the extension without a leading dot, matching the engine', () => {
+    expect(evaluateCustomRuleExpression('extension', baseContext)).toBe('txt');
+    expect(evaluateCustomRuleExpression('currentStem + ext(extension)', baseContext)).toBe('My File.txt');
+  });
+
+  it('caps pad width and text length', () => {
+    expect(evaluateCustomRuleExpression('pad(index, 255)', baseContext)).toHaveLength(255);
+    expect(() => evaluateCustomRuleExpression('pad(index, 256)', baseContext)).toThrow(/between 0 and 255/);
+    expect(() => evaluateCustomRuleExpression('pad(index, 10000000000)', baseContext)).toThrow(/between 0 and 255/);
+    expect(() =>
+      evaluateCustomRuleExpression(
+        'replaceAll(replaceAll(replaceAll(pad("", 255, "a"), "a", pad("", 255, "a")), "a", "aa"), "a", "aa")',
+        baseContext,
+      ),
+    ).toThrow(/longer than 4096 characters/);
+  });
+
+  it('does not resolve identifiers or helpers through Object.prototype', () => {
+    for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      expect(() => evaluateCustomRuleExpression(name, baseContext)).toThrow(/Unknown value/);
+      expect(() => evaluateCustomRuleExpression(`${name}(currentStem)`, baseContext)).toThrow(/Unknown helper/);
+    }
+  });
+
+  it('keeps the compiled expression cache bounded', () => {
+    for (let index = 0; index < 500; index += 1) {
+      evaluateCustomRuleExpression(`currentStem + "${index}"`, baseContext);
+    }
+    expect(getCompiledExpressionCacheSize()).toBeLessThanOrEqual(100);
+  });
+
+  it('limits regexReplace pattern length', () => {
+    expect(() =>
+      evaluateCustomRuleExpression(`regexReplace(currentStem, "${'a'.repeat(1001)}", "-")`, baseContext),
+    ).toThrow(/longer than 1000 characters/);
+  });
+
+  it('uses the supplied path flavour for basename and dirname', () => {
+    const context = { ...baseContext, sourcePath: 'C:\\Data\\My File.txt' };
+    expect(evaluateCustomRuleExpression('basename(sourcePath)', context, { pathApi: path.win32 })).toBe('My File.txt');
+    expect(evaluateCustomRuleExpression('dirname(sourcePath)', context, { pathApi: path.win32 })).toBe('C:\\Data');
   });
 });
