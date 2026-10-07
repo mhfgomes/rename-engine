@@ -5,44 +5,95 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   publish:
     name: Publish package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for npm trusted publishing (OIDC) and --provenance.
+      id-token: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Full history so the tagged commit can be checked against origin/main.
+          fetch-depth: 0
+          persist-credentials: false
 
+      # No dependency cache in the release job, to avoid cache poisoning.
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Verify tag version
+      - name: Verify tag
+        id: verify
         shell: bash
         run: |
+          set -euo pipefail
+
           package_version="$(node -p "require('./package.json').version")"
           tag_version="${GITHUB_REF_NAME#v}"
 
           if [ "${package_version}" != "${tag_version}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match package version ${package_version}."
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${package_version}."
             exit 1
           fi
+
+          tagged_commit="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          if ! git merge-base --is-ancestor "${tagged_commit}" origin/main; then
+            echo "::error::Tagged commit ${tagged_commit} is not on origin/main. Only tag commits that have landed on main."
+            exit 1
+          fi
+
+          # Prereleases (e.g. 1.2.0-beta.1) must never become `latest`.
+          if [[ "${package_version}" == *-* ]]; then
+            dist_tag=next
+          else
+            dist_tag=latest
+          fi
+
+          echo "Publishing ${package_version} from ${tagged_commit} with dist-tag '${dist_tag}'."
+          echo "dist-tag=${dist_tag}" >> "${GITHUB_OUTPUT}"
+
+      # npm trusted publishing (OIDC) requires npm >= 11.5.1.
+      - name: Ensure npm supports trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(npm --version)"
+          if ! node -e "const [a,b,c]=process.argv[1].split('.').map(Number);process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)" "${current}"; then
+            npm install --global npm@^11.5.1
+          fi
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Check package
         run: npm run check
 
+      # Authentication:
+      # - Preferred: npm trusted publishing (OIDC). Configure it once on
+      #   npmjs.com -> package settings -> Trusted Publisher -> GitHub Actions
+      #   (owner: mhfgomes, repository: rename-engine, workflow: publish.yml).
+      #   npm then exchanges this job's OIDC token for a short-lived publish
+      #   token; no secret is needed.
+      # - Fallback: if trusted publishing is not configured, npm falls back to
+      #   the NPM_TOKEN secret below. Once trusted publishing works, delete the
+      #   NPM_TOKEN secret (and this env entry) and consider setting the package
+      #   to "Require two-factor authentication and disallow tokens".
       - name: Publish package
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag "${DIST_TAG}"
         env:
+          DIST_TAG: ${{ steps.verify.outputs.dist-tag }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
