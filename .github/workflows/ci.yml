@@ -9,19 +9,35 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
-    name: Verify package
+    name: Verify package (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 20 cannot run the dev toolchain (vitest 5 requires
+        # ^22.12.0 || ^24.0.0 || >=26.0.0); it is covered by the
+        # `package-node20` job below, which tests the built package.
+        node-version: [22, 24]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
@@ -29,3 +45,41 @@ jobs:
 
       - name: Check package
         run: npm run check
+
+  package-node20:
+    name: Test packed package (Node 20)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 24 (build toolchain)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pack package
+        run: |
+          mkdir -p "${RUNNER_TEMP}/package"
+          npm pack --pack-destination "${RUNNER_TEMP}/package"
+
+      - name: Setup Node 20 (consumer runtime)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      - name: Smoke-test packed package on Node 20
+        shell: bash
+        run: |
+          node --version
+          tarball="$(ls "${RUNNER_TEMP}"/package/*.tgz)"
+          PACKAGE_TARBALL="${tarball}" node scripts/package-smoke-test.mjs
