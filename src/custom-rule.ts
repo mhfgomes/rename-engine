@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { PathApi } from './path-key.js';
 import { MAX_CUSTOM_RULE_TEXT_LENGTH, MAX_PAD_WIDTH, MAX_REGEX_PATTERN_LENGTH } from './limits.js';
 
 interface CustomRuleContext {
@@ -39,11 +40,11 @@ interface Token {
 
 export interface EvaluateCustomRuleOptions {
   /** Path flavour used by the `basename` and `dirname` helpers. Defaults to the host. */
-  pathApi?: typeof path.posix;
+  pathApi?: Pick<PathApi, 'basename' | 'dirname'>;
 }
 
 interface HelperEnvironment {
-  pathApi: typeof path.posix;
+  pathApi: Pick<PathApi, 'basename' | 'dirname'>;
 }
 
 type Helper = (this: HelperEnvironment, ...args: ExpressionValue[]) => ExpressionValue;

@@ -8,7 +8,7 @@ The reusable planning engine behind Fast Renamer. It applies ordered rename rule
 npm install @fastrenamer/rename-engine
 ```
 
-Node.js 20 or newer is supported. The package is ESM-only and has no runtime dependencies.
+Node.js 22 or newer is supported. Node.js 20 is no longer supported. The package is ESM-only and has no runtime dependencies.
 
 ## Example
 
