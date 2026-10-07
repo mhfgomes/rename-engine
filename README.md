@@ -2,8 +2,6 @@
 
 The reusable planning engine behind Fast Renamer. It applies ordered rename rules, sorts input paths, validates names for a target platform, and detects destination conflicts without touching the filesystem.
 
-This documentation describes **v0.2.0**, as implemented in [PR #2](https://github.com/mhfgomes/rename-engine/pull/2). That PR bumps the version but does not itself tag or publish a release. Until it is published, the registry installation below may install an earlier version.
-
 ## Documentation
 
 - [Getting started and integration](docs/guide.md): input preparation, working examples, external conflicts, nested directories, workers, and execution responsibilities.
