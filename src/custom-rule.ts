@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { MAX_CUSTOM_RULE_TEXT_LENGTH, MAX_PAD_WIDTH, MAX_REGEX_PATTERN_LENGTH } from './limits.js';
 
 interface CustomRuleContext {
   currentName: string;
@@ -36,6 +37,20 @@ interface Token {
   index: number;
 }
 
+export interface EvaluateCustomRuleOptions {
+  /** Path flavour used by the `basename` and `dirname` helpers. Defaults to the host. */
+  pathApi?: typeof path.posix;
+}
+
+interface HelperEnvironment {
+  pathApi: typeof path.posix;
+}
+
+type Helper = (this: HelperEnvironment, ...args: ExpressionValue[]) => ExpressionValue;
+
+const COMPILED_EXPRESSION_CACHE_LIMIT = 100;
+
+// Small LRU: Map iteration order is insertion order, so the first key is the least recently used.
 const compiledExpressionCache = new Map<string, ExpressionNode>();
 
 function titleCase(value: string) {
@@ -130,7 +145,9 @@ function isTruthy(value: unknown) {
   return Boolean(value);
 }
 
-const helpers: Record<string, (...args: ExpressionValue[]) => ExpressionValue> = {
+// Helpers are looked up with Object.hasOwn on a null-prototype table so names such as
+// `toString` or `constructor` are reported as unknown instead of resolving to built-ins.
+const helpers: Record<string, Helper> = Object.assign(Object.create(null) as Record<string, Helper>, {
   concat: (...args) => args.map((value) => toStringValue(value)).join(''),
   lower: (...args) => {
     assertArity('lower', args, 1);
@@ -197,6 +214,10 @@ const helpers: Record<string, (...args: ExpressionValue[]) => ExpressionValue> =
     const replacement = asString(args[2], 'regexReplace(replacement)');
     const flags = args[3] === undefined ? '' : asString(args[3], 'regexReplace(flags)');
 
+    if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
+      throw new Error(`regexReplace failed: pattern is longer than ${MAX_REGEX_PATTERN_LENGTH} characters.`);
+    }
+
     let expression: RegExp;
     try {
       expression = new RegExp(pattern, flags);
@@ -213,8 +234,8 @@ const helpers: Record<string, (...args: ExpressionValue[]) => ExpressionValue> =
     const width = asNumber(args[1], 'pad(width)');
     const fill = args[2] === undefined ? '0' : asString(args[2], 'pad(fill)');
 
-    if (!Number.isInteger(width) || width < 0) {
-      throw new Error('pad(width) must be a non-negative integer.');
+    if (!Number.isInteger(width) || width < 0 || width > MAX_PAD_WIDTH) {
+      throw new Error(`pad(width) must be an integer between 0 and ${MAX_PAD_WIDTH}.`);
     }
 
     if (fill.length === 0) {
@@ -250,13 +271,13 @@ const helpers: Record<string, (...args: ExpressionValue[]) => ExpressionValue> =
     }
     return value.startsWith('.') ? value : `.${value}`;
   },
-  basename: (...args) => {
+  basename(...args) {
     assertArity('basename', args, 1);
-    return path.basename(asString(args[0], 'basename(value)'));
+    return this.pathApi.basename(asString(args[0], 'basename(value)'));
   },
-  dirname: (...args) => {
+  dirname(...args) {
     assertArity('dirname', args, 1);
-    return path.dirname(asString(args[0], 'dirname(value)'));
+    return this.pathApi.dirname(asString(args[0], 'dirname(value)'));
   },
   len: (...args) => {
     assertArity('len', args, 1);
@@ -284,7 +305,14 @@ const helpers: Record<string, (...args: ExpressionValue[]) => ExpressionValue> =
       ? asString(args[0], 'matchCase(value)').includes(asString(args[1], 'matchCase(search)'))
       : asString(args[0], 'matchCase(value)').toLowerCase().includes(asString(args[1], 'matchCase(search)').toLowerCase());
   },
-};
+} satisfies Record<string, Helper>);
+
+function limitText(value: ExpressionValue) {
+  if (typeof value === 'string' && value.length > MAX_CUSTOM_RULE_TEXT_LENGTH) {
+    throw new Error(`Text is longer than ${MAX_CUSTOM_RULE_TEXT_LENGTH} characters.`);
+  }
+  return value;
+}
 
 function tokenize(expression: string): Token[] {
   const tokens: Token[] = [];
@@ -645,26 +673,30 @@ function compareValues(left: ExpressionValue, right: ExpressionValue, operator: 
   }
 }
 
-function evaluate(node: ExpressionNode, context: CustomRuleContext): ExpressionValue {
+function evaluate(
+  node: ExpressionNode,
+  context: CustomRuleContext,
+  environment: HelperEnvironment,
+): ExpressionValue {
   switch (node.type) {
     case 'literal':
       return node.value;
     case 'identifier': {
-      if (node.name in context) {
+      if (Object.hasOwn(context, node.name)) {
         return context[node.name as keyof CustomRuleContext];
       }
       throw new Error(`Unknown value "${node.name}".`);
     }
     case 'call': {
-      const helper = helpers[node.callee];
-      if (!helper) {
+      if (!Object.hasOwn(helpers, node.callee)) {
         throw new Error(`Unknown helper "${node.callee}".`);
       }
-      const args = node.args.map((argument) => evaluate(argument, context));
-      return helper(...args);
+      const helper = helpers[node.callee];
+      const args = node.args.map((argument) => evaluate(argument, context, environment));
+      return limitText(helper.apply(environment, args));
     }
     case 'unary': {
-      const value = evaluate(node.argument, context);
+      const value = evaluate(node.argument, context, environment);
       if (node.operator === '!') {
         return !isTruthy(value);
       }
@@ -672,23 +704,23 @@ function evaluate(node: ExpressionNode, context: CustomRuleContext): ExpressionV
     }
     case 'binary': {
       if (node.operator === '&&') {
-        const left = evaluate(node.left, context);
-        return isTruthy(left) ? evaluate(node.right, context) : left;
+        const left = evaluate(node.left, context, environment);
+        return isTruthy(left) ? evaluate(node.right, context, environment) : left;
       }
       if (node.operator === '||') {
-        const left = evaluate(node.left, context);
-        return isTruthy(left) ? left : evaluate(node.right, context);
+        const left = evaluate(node.left, context, environment);
+        return isTruthy(left) ? left : evaluate(node.right, context, environment);
       }
 
-      const left = evaluate(node.left, context);
-      const right = evaluate(node.right, context);
+      const left = evaluate(node.left, context, environment);
+      const right = evaluate(node.right, context, environment);
 
       switch (node.operator) {
         case '+':
           if (typeof left === 'number' && typeof right === 'number') {
             return left + right;
           }
-          return toStringValue(left) + toStringValue(right);
+          return limitText(toStringValue(left) + toStringValue(right));
         case '-':
           return asNumber(left, 'Left operand') - asNumber(right, 'Right operand');
         case '*':
@@ -709,15 +741,17 @@ function evaluate(node: ExpressionNode, context: CustomRuleContext): ExpressionV
       }
     }
     case 'conditional':
-      return isTruthy(evaluate(node.test, context))
-        ? evaluate(node.consequent, context)
-        : evaluate(node.alternate, context);
+      return isTruthy(evaluate(node.test, context, environment))
+        ? evaluate(node.consequent, context, environment)
+        : evaluate(node.alternate, context, environment);
   }
 }
 
 function compileExpression(expression: string) {
   const cached = compiledExpressionCache.get(expression);
   if (cached) {
+    compiledExpressionCache.delete(expression);
+    compiledExpressionCache.set(expression, cached);
     return cached;
   }
 
@@ -728,12 +762,25 @@ function compileExpression(expression: string) {
   const tokens = tokenize(expression);
   const ast = new Parser(tokens).parse();
   compiledExpressionCache.set(expression, ast);
+  while (compiledExpressionCache.size > COMPILED_EXPRESSION_CACHE_LIMIT) {
+    const oldestKey = compiledExpressionCache.keys().next().value as string;
+    compiledExpressionCache.delete(oldestKey);
+  }
   return ast;
 }
 
-export function evaluateCustomRuleExpression(expression: string, context: CustomRuleContext) {
+/** Exposed for tests: number of compiled expressions currently cached. */
+export function getCompiledExpressionCacheSize() {
+  return compiledExpressionCache.size;
+}
+
+export function evaluateCustomRuleExpression(
+  expression: string,
+  context: CustomRuleContext,
+  options: EvaluateCustomRuleOptions = {},
+) {
   const ast = compileExpression(expression);
-  const result = evaluate(ast, context);
+  const result = evaluate(ast, context, { pathApi: options.pathApi ?? path });
 
   if (typeof result !== 'string') {
     throw new Error('Custom rule expressions must return text.');
