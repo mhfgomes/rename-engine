@@ -11,6 +11,7 @@ import type {
 import { evaluateCustomRuleExpression } from './custom-rule.js';
 import { MAX_NAME_LENGTH, MAX_PAD_WIDTH, MAX_REGEX_PATTERN_LENGTH } from './limits.js';
 import { getPathApi, isCaseInsensitive, normalizeFsPath, normalizePathKey } from './path-key.js';
+import { computeSequenceValue, formatLetterSequence } from './sequence.js';
 import { sortItemsByMode } from './sort.js';
 
 export { normalizePathKey } from './path-key.js';
@@ -191,21 +192,6 @@ function formatSequenceToken(index: number, argument?: string) {
   return padWidth > 0 ? String(nextValue).padStart(padWidth, '0') : String(nextValue);
 }
 
-function formatLetterSequence(value: number, casing: 'upper' | 'lower') {
-  const alphabetStart = casing === 'upper' ? 65 : 97;
-  const normalizedValue = Math.max(1, Math.floor(value));
-  let remaining = normalizedValue;
-  let sequence = '';
-
-  while (remaining > 0) {
-    remaining -= 1;
-    sequence = String.fromCharCode(alphabetStart + (remaining % 26)) + sequence;
-    remaining = Math.floor(remaining / 26);
-  }
-
-  return sequence;
-}
-
 function parseLetterSequenceCasing(argument?: string): 'upper' | 'lower' {
   const normalizedArgument = argument?.toLowerCase();
   return normalizedArgument === 'lower' || normalizedArgument === 'a' ? 'lower' : 'upper';
@@ -274,12 +260,6 @@ function compileUserRegExp(pattern: string, flags: string) {
   }
 
   return new RegExp(pattern, flags);
-}
-
-function assertFiniteSequenceNumbers(start: number, step: number) {
-  if (!Number.isFinite(start) || !Number.isFinite(step)) {
-    throw new Error('Sequence start and step must be finite numbers.');
-  }
 }
 
 function resolvePadWidth(padWidth: number | undefined) {
@@ -400,15 +380,13 @@ function applyRule(
       return { ...parts, stem: parts.stem.replace(expression, '') };
     }
     case 'sequence_insert': {
-      assertFiniteSequenceNumbers(rule.start, rule.step);
       const padWidth = resolvePadWidth(rule.padWidth);
-      const rawNumber = rule.start + context.index * rule.step;
+      const rawNumber = computeSequenceValue(rule.start, rule.step, context.index);
       const sequence = formatPaddedNumber(rawNumber, padWidth);
       return applyTokenAtPosition(parts, isDirectory, rule.position, sequence, rule.separator);
     }
     case 'letter_sequence_insert': {
-      assertFiniteSequenceNumbers(rule.start, rule.step);
-      const rawNumber = rule.start + context.index * rule.step;
+      const rawNumber = computeSequenceValue(rule.start, rule.step, context.index);
       const sequence = formatLetterSequence(rawNumber, rule.casing);
       return applyTokenAtPosition(parts, isDirectory, rule.position, sequence, rule.separator);
     }
@@ -532,6 +510,8 @@ interface PlannedItem {
   sourcePath: string;
   parentPath: string;
   sourceKey: string;
+  /** The source is a filesystem root (`/`, `C:\`, a UNC share root); it can never be renamed. */
+  isRoot: boolean;
   proposedName: string;
   reasons: string[];
 }
@@ -553,6 +533,20 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
     const parentPath = normalizeFsPath(item.parentPath, platform);
     const reasons: string[] = [];
     let proposedName = item.name;
+
+    // A root is its own parent, so it has no name to change and no directory to move into.
+    // Reject it up front: ownership resolution below would otherwise recurse into itself.
+    if (pathApi.dirname(sourcePath) === sourcePath) {
+      return {
+        item,
+        sourcePath,
+        parentPath,
+        sourceKey: normalizePathKey(sourcePath, platform),
+        isRoot: true,
+        proposedName,
+        reasons: ['A filesystem root cannot be renamed.'],
+      };
+    }
 
     try {
       const parts = applyRulesToParts(
@@ -598,6 +592,7 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
       sourcePath,
       parentPath,
       sourceKey: normalizePathKey(sourcePath, platform),
+      isRoot: false,
       proposedName,
       reasons,
     };
@@ -625,7 +620,7 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
 
     let resolved: string;
     const owner = ownerByKey.get(directoryKey);
-    if (owner?.item.isDirectory) {
+    if (owner?.item.isDirectory && !owner.isRoot) {
       resolved = resolveTargetPath(owner);
     } else {
       const parentPath = pathApi.dirname(directoryPath);
@@ -653,7 +648,9 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
       return cached;
     }
 
-    const nextPath = pathApi.join(resolveFinalDirectoryPath(planned), planned.proposedName);
+    const nextPath = planned.isRoot
+      ? planned.sourcePath
+      : pathApi.join(resolveFinalDirectoryPath(planned), planned.proposedName);
     targetCache.set(planned, nextPath);
     return nextPath;
   };

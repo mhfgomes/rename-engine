@@ -1082,3 +1082,68 @@ describe('generatePreview', () => {
     expect(posix.rows[0].status).toBe('unchanged');
   });
 });
+
+describe('generatePreview with a selected filesystem root', () => {
+  const rootReason = 'A filesystem root cannot be renamed.';
+  const lowerCase: RenameRule = { id: 'lower', type: 'case_transform', enabled: true, mode: 'lower' };
+
+  it('reports a Linux root as invalid instead of overflowing the stack', () => {
+    const preview = generatePreview({
+      items: [
+        { sourcePath: '/', parentPath: '/', name: '', isDirectory: true },
+        { sourcePath: '/Docs', parentPath: '/', name: 'Docs', isDirectory: true },
+        { sourcePath: '/Docs/A.TXT', parentPath: '/Docs', name: 'A.TXT', isDirectory: false },
+        { sourcePath: '/B.TXT', parentPath: '/', name: 'B.TXT', isDirectory: false },
+      ],
+      rules: [lowerCase],
+      platform: 'linux',
+      sortMode: 'natural_path',
+    });
+
+    const byPath = new Map(preview.rows.map((row) => [row.sourcePath, row]));
+    const root = byPath.get('/');
+    expect(root?.status).toBe('invalid');
+    expect(root?.reasons).toEqual([rootReason]);
+    expect(root?.nextPath).toBe('/');
+    expect(root?.changed).toBe(false);
+    expect(byPath.get('/Docs')?.nextPath).toBe('/docs');
+    expect(byPath.get('/Docs/A.TXT')?.nextPath).toBe('/docs/a.TXT');
+    expect(byPath.get('/B.TXT')?.nextPath).toBe('/b.TXT');
+    expect(byPath.get('/B.TXT')?.status).toBe('ok');
+    expect(preview.summary.invalid).toBe(1);
+    expect(preview.summary.blocked).toBe(true);
+  });
+
+  it('reports a Windows drive root as invalid and still resolves its children', () => {
+    const preview = generatePreview({
+      items: [
+        { sourcePath: 'C:\\', parentPath: 'C:\\', name: '', isDirectory: true },
+        { sourcePath: 'C:\\Docs', parentPath: 'C:\\', name: 'Docs', isDirectory: true },
+        { sourcePath: 'C:\\Docs\\A.TXT', parentPath: 'C:\\Docs', name: 'A.TXT', isDirectory: false },
+      ],
+      rules: [lowerCase],
+      platform: 'win32',
+      sortMode: 'natural_path',
+    });
+
+    const byPath = new Map(preview.rows.map((row) => [row.sourcePath, row]));
+    const root = byPath.get('C:\\');
+    expect(root?.status).toBe('invalid');
+    expect(root?.reasons).toEqual([rootReason]);
+    expect(root?.nextPath).toBe('C:\\');
+    expect(byPath.get('C:\\Docs')?.nextPath).toBe('C:\\docs');
+    expect(byPath.get('C:\\Docs\\A.TXT')?.nextPath).toBe('C:\\docs\\a.TXT');
+    expect(preview.summary.blocked).toBe(true);
+  });
+
+  it('reports a Windows UNC share root as invalid', () => {
+    const row = generatePreview({
+      items: [{ sourcePath: '\\\\server\\share\\', parentPath: '\\\\server\\share\\', name: '', isDirectory: true }],
+      rules: [],
+      platform: 'win32',
+      sortMode: 'natural_path',
+    }).rows[0];
+    expect(row.status).toBe('invalid');
+    expect(row.reasons).toEqual([rootReason]);
+  });
+});
