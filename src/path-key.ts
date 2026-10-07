@@ -1,6 +1,18 @@
 import path from 'node:path';
 import type { PlatformTarget } from './types.js';
 
+// Keep published declarations independent of @types/node. Only expose the
+// operations the engine needs, while using Node's implementation at runtime.
+export interface PathApi {
+  basename(path: string, suffix?: string): string;
+  dirname(path: string): string;
+  join(...paths: string[]): string;
+  normalize(path: string): string;
+  parse(path: string): { root: string };
+  relative(from: string, to: string): string;
+  sep: string;
+}
+
 export function isCaseInsensitive(platform: PlatformTarget | undefined) {
   return platform === 'darwin' || platform === 'win32';
 }
@@ -27,7 +39,7 @@ export function normalizePathKey(candidatePath: string, platform: PlatformTarget
   return isCaseInsensitive(platform) ? normalized.toLowerCase() : normalized;
 }
 
-export function getPathApi(platform: PlatformTarget | undefined) {
+export function getPathApi(platform: PlatformTarget | undefined): PathApi {
   return platform === 'win32' ? path.win32 : path.posix;
 }
 
