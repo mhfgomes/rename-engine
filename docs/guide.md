@@ -23,7 +23,7 @@ const item = {
 
 Use consistent values: `name` should be the basename of `sourcePath`, and `parentPath` its directory. `sourcePath` drives ancestry and final target resolution; `parentPath` drives naming context such as `{parent}`. The engine trusts these fields rather than reconstructing or validating the item schema.
 
-Use absolute paths in the target platform's syntax. Relative paths are not resolved against a working directory by the planner. Do not include filesystem roots as rename items, and provide well-formed acyclic directory relationships. Structural input errors are outside the row-level rule-error guarantee.
+Use absolute paths in the target platform's syntax. Relative paths are not resolved against a working directory by the planner. Avoid including filesystem roots as rename items: the planner reports them as invalid, keeps their original paths, and still plans their selected children normally. Provide well-formed acyclic directory relationships. Other structural input errors are outside the row-level rule-error guarantee.
 
 For Windows paths in JavaScript/TypeScript, escape backslashes or use `String.raw`:
 

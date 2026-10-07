@@ -32,6 +32,7 @@ npm run check
 | `src/custom-rule.ts` | Expression tokenizer/parser, helper table, evaluator, bounded compiled-expression cache |
 | `src/sort.ts` | Fixed-locale comparators and ancestor-first sorting |
 | `src/path-key.ts` | Internal path flavor/normalization and public key helper |
+| `src/sequence.ts` | Internal safe-range sequence computation and bounded letter formatting |
 | `src/limits.ts` | Exported rule/name limits |
 | `src/*.test.ts` | Rule, planner, custom-expression, and ordering regression coverage |
 | `scripts/package-smoke-test.mjs` | Root and sort package import smoke checks |

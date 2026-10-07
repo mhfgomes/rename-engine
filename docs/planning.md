@@ -78,7 +78,9 @@ Existing paths that match batch source keys are not external conflicts. Swaps an
 
 ## Name validation
 
-Validation runs even with no enabled rules. It operates on the proposed basename, not the full target path.
+Selected filesystem roots (`/`, a Windows drive root, or a UNC share root) are rejected before rule application with `A filesystem root cannot be renamed.` Their target remains the normalized source path, and their selected children are still planned normally. Rules and normal basename validation are skipped for root rows.
+
+For other items, validation runs even with no enabled rules. It operates on the proposed basename, not the full target path.
 
 On all targets, names are invalid when:
 
@@ -106,6 +108,7 @@ Diagnostics are human-readable strings, not exported error codes. Prefer status-
 
 | Reason | Trigger |
 | --- | --- |
+| `A filesystem root cannot be renamed.` | Selected filesystem root; target remains its normalized original path |
 | `Name is empty.` | Empty or whitespace-only basename |
 | `Name is empty; only the extension would remain.` | Previously nonempty file stem removed while extension remains |
 | `Name contains unsupported path characters.` | Forward slash in name |
@@ -126,7 +129,7 @@ Diagnostics are human-readable strings, not exported error codes. Prefer status-
 
 The case-only advisory is emitted by the engine, but staging itself is not implemented here. Because its condition uses normalized name keys, it can also appear for Unicode-equivalent spellings on darwin or a parent-only move with an unchanged basename. It is advice, not an execution guarantee.
 
-Common detail messages include `Sequence start and step must be finite numbers.`, `Pad width must be a number no greater than 255.`, and `Regular expression is longer than 1000 characters.` Custom diagnostics include unknown values/helpers, parser character positions, wrong types/arity, `Custom rule expressions must return text.`, and `Text is longer than 4096 characters.`
+Common detail messages include `Sequence start and step must be finite numbers.`, `Sequence value for item <n> is outside the supported range of ±9007199254740991.`, `Pad width must be a number no greater than 255.`, and `Regular expression is longer than 1000 characters.` Custom diagnostics include unknown values/helpers, parser character positions, wrong types/arity, `Custom rule expressions must return text.`, and `Text is longer than 4096 characters.`
 
 ## Migrating to v0.2.0
 
@@ -138,6 +141,8 @@ There are no new status values, but stricter validation and corrected ordering c
 - Do not assume one row per source key. Duplicate sources are retained and conflict; ids may have `#n` suffixes.
 - Darwin keys now use NFC and locale-independent lowercasing. Linux/Windows preserve Unicode spelling differences; Windows still lowercases keys.
 - Bad regex/padding/custom configurations become invalid rows in `generatePreview`; direct `applyRulesToName` still throws.
+- Selected filesystem roots are invalid without recursive target resolution; selected children are still planned normally.
+- Numeric and letter sequence rules reject nonfinite computed values and magnitudes above `Number.MAX_SAFE_INTEGER`, even when start/step themselves are finite.
 - New caps bound numeric padding, regex pattern length, custom helper text outputs, and the internal expression cache.
 - Windows reserved-name and control/length checks are stricter. POSIX length is checked in UTF-8 bytes.
 - Literal case-insensitive replacement preserves correct offsets, and replacement `$` tokens remain literal in built-in literal `find_replace`.

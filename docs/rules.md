@@ -201,7 +201,7 @@ Value is `start + index * step`. Start and step must be finite; zero, negative, 
 // Report.txt -> Report_001.txt
 ```
 
-Use integer start/step for conventional numbering. Validation checks start and step individually; it does not promise that arithmetic at extreme magnitudes remains finite or precise.
+Use integer start/step for conventional numbering. The computed value must be finite and its absolute magnitude must not exceed `Number.MAX_SAFE_INTEGER` (9007199254740991). Overflow or out-of-range values fail the rule for the affected item. Fractional values are still accepted; this is a magnitude bound, not an integer-only restriction.
 
 ## `letter_sequence_insert` — `LetterSequenceInsertRule`
 
@@ -214,7 +214,7 @@ Use integer start/step for conventional numbering. Validation checks start and s
 | `casing` | `'upper' \| 'lower'` | Alphabet case |
 | `separator` | `string` | Literal separator |
 
-Start/step must be finite. The computed value is floored and clamped to at least 1. A decreasing sequence can therefore repeat A/a after reaching 1. There is no letter padding.
+Start/step must be finite. The computed value must also be finite and within ±`Number.MAX_SAFE_INTEGER`; otherwise the rule fails for the affected item. A supported value is floored and clamped to at least 1. A decreasing sequence can therefore repeat A/a after reaching 1. There is no letter padding.
 
 ```ts
 {

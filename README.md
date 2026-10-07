@@ -56,6 +56,7 @@ The root export contains the complete public API. `@fastrenamer/rename-engine/so
 - Targets follow renamed ancestor directories, including through intermediate directories absent from the input.
 - Path keys lowercase on `darwin` and `win32`, and NFC-normalize only on `darwin`. The engine models these platforms as case-insensitive; it does not inspect volume settings.
 - Rule failures become `invalid` rows in a preview. `applyRulesToName` throws instead.
+- Selected filesystem roots are invalid and retain their paths; their children are still planned normally. Numeric and letter sequence values must be finite and within ±`Number.MAX_SAFE_INTEGER`.
 - Duplicate source paths remain separate `conflict` rows with unique ids.
 - Final names are limited to 255 UTF-8 bytes on POSIX targets or 255 UTF-16 code units on Windows. Windows device names, reserved characters, trailing periods/spaces, and control characters are checked.
 
