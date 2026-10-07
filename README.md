@@ -2,81 +2,80 @@
 
 The reusable planning engine behind Fast Renamer. It applies ordered rename rules, sorts input paths, validates names for a target platform, and detects destination conflicts without touching the filesystem.
 
+## Documentation
+
+- [Getting started and integration](docs/guide.md): input preparation, working examples, external conflicts, nested directories, workers, and execution responsibilities.
+- [Public API reference](docs/api.md): every public function, constant, interface, and shared application contract.
+- [Rename rules](docs/rules.md): all eleven rule types, every option, template tokens, sequences, dates, and extension behavior.
+- [Custom expression language](docs/custom-expressions.md): values, operators, every helper, escaping, errors, and limits.
+- [Planning and platform behavior](docs/planning.md): sorting, path keys, row statuses, validation, conflicts, diagnostics, and v0.2.0 migration notes.
+- [Development](docs/development.md): source layout, checks, packaging, and documentation maintenance.
+
 ## Install
 
 ```sh
 npm install @fastrenamer/rename-engine
 ```
 
-Node.js 22 or newer is supported. Node.js 20 is no longer supported. The package is ESM-only and has no runtime dependencies.
+Node.js 22 or newer is supported. The package is ESM-only and has no runtime dependencies. Use ESM `import`, or dynamic `import()` from CommonJS. The implementation uses `node:path`; a browser integration needs an appropriate bundler/polyfill and is not a standalone browser build.
 
-## Example
+## Quick start
 
 ```ts
 import { generatePreview, type RenameRule } from '@fastrenamer/rename-engine';
 
 const rules: RenameRule[] = [
-  {
-    id: 'normalize',
-    type: 'case_transform',
-    enabled: true,
-    mode: 'kebab',
-  },
+  { id: 'normalize', type: 'case_transform', enabled: true, mode: 'kebab' },
 ];
 
 const preview = generatePreview({
-  items: [
-    {
-      sourcePath: '/documents/Quarterly Report.pdf',
-      parentPath: '/documents',
-      name: 'Quarterly Report.pdf',
-      isDirectory: false,
-    },
-  ],
+  items: [{
+    sourcePath: '/documents/Quarterly Report.pdf',
+    parentPath: '/documents',
+    name: 'Quarterly Report.pdf',
+    isDirectory: false,
+  }],
   rules,
   sortMode: 'natural_path',
   platform: 'linux',
-  existingPathExists: (candidatePath) => candidatePath === '/documents/quarterly-report.pdf',
 });
 
-console.log(preview.rows[0]);
+console.log(preview.rows[0].nextPath); // /documents/quarterly-report.pdf
+console.log(preview.rows[0].status);   // ok
+console.log(preview.summary.blocked); // false
 ```
 
-`generatePreview` is synchronous and filesystem-independent. Pass `existingPathExists` when the caller wants conflicts with paths outside the batch to be detected. The engine never executes a rename.
+`generatePreview` is synchronous. Pass `existingPathExists` to detect occupied destinations outside the batch; without it, only conflicts inside the supplied batch are detected. The engine never executes a rename, discovers files, persists presets, or performs undo. An unblocked preview is a plan, not a filesystem transaction.
 
-## Planning behavior
+The root export contains the complete public API. `@fastrenamer/rename-engine/sort` and `@fastrenamer/rename-engine/types` provide narrower imports. The custom evaluator is an internal implementation detail; use a `custom_rule` through the public planner or `applyRulesToName`.
 
-- **Deterministic ordering.** Items are sorted with a total order (fixed `en` collation, then a Unicode code point tie-break), so the same input set always yields the same order, sequence numbers, and targets regardless of input order or host locale. Ancestor directories are then placed before their descendants, and each child's target is resolved under its parent row's computed target.
-- **Path keys.** `normalizePathKey` NFC-normalizes paths on `darwin` only and lowercases them on `darwin` and `win32`. These keys are used for row ids, source matching, ancestry, and conflict detection. On `darwin` NFC and NFD spellings of the same name collide, matching APFS/HFS+; on `linux` and `win32` they are distinct entries and stay distinct.
-- **Path flavour.** Paths are joined and normalized with `path.win32` when `platform` is `'win32'` and with `path.posix` otherwise, independent of the host OS. Source paths such as `/d//a.txt` are normalized before comparison and are not reported as renames.
-- **Row status.** `status` is one of `ok`, `conflict`, `invalid`, or `unchanged`; `reasons` explains every non-`ok` row. `generatePreview` never throws for bad rule configuration: an invalid regular expression, an out-of-range pad width, a sequence value that is not finite or exceeds `Number.MAX_SAFE_INTEGER` in magnitude (for example a huge `step`), or a failing custom rule makes the affected rows `invalid` with a reason such as `Rule "find_replace" failed: ...` or `Custom rule failed: ...`. (`applyRulesToName` still throws in these cases.) A selected filesystem root (`/`, `C:\`, a UNC share root) cannot be renamed; its row is `invalid` with the reason `A filesystem root cannot be renamed.`, and its selected children are still planned normally.
-- **Duplicate sources.** Items whose source paths have the same key (for example `/d/A.txt` and `/d/a.txt` on `darwin`) are all kept and reported as `conflict` rows with the reason `Another item in the batch has the same source path.` The first row keeps the plain key as its `id`; later duplicates get the lowest free `#<n>` suffix (starting at `#2`) that isn't already another source's key, so ids stay unique.
-- **Name validation.** Names are rejected when empty, when a rule removes the whole stem (`abc.txt` -> `.txt`), when they contain `/` or control characters (`U+0000`-`U+001F`), or when they are `.`/`..`. On `win32`, reserved characters, trailing spaces or periods, and reserved device names are rejected; device names are matched on the part before the first dot with trailing spaces removed (`CON.tar.gz`, `nul .txt`, `COM0`-`COM9`, `LPT0`-`LPT9`, `COM¹²³`, `LPT¹²³`, `CONIN$`, `CONOUT$`), for files and directories. Names may be at most 255 UTF-16 code units on `win32` and 255 UTF-8 bytes elsewhere.
+## v0.2.0 behavior at a glance
 
-### Limits
+- Rules run in array order, skipping disabled rules. Most transform the stem while preserving the extension.
+- Sorting uses fixed `en` collation and code point tie-breaks, followed by ancestor-directory ordering. Sequence indices refer to this final batch order.
+- Targets follow renamed ancestor directories, including through intermediate directories absent from the input.
+- Path keys lowercase on `darwin` and `win32`, and NFC-normalize only on `darwin`. The engine models these platforms as case-insensitive; it does not inspect volume settings.
+- Rule failures become `invalid` rows in a preview. `applyRulesToName` throws instead.
+- Selected filesystem roots are invalid and retain their paths; their children are still planned normally. Numeric and letter sequence values must be finite and within ±`Number.MAX_SAFE_INTEGER`.
+- Duplicate source paths remain separate `conflict` rows with unique ids.
+- Final names are limited to 255 UTF-8 bytes on POSIX targets or 255 UTF-16 code units on Windows. Windows device names, reserved characters, trailing periods/spaces, and control characters are checked.
 
-The following limits are exported as constants:
+## Limits and untrusted rules
 
-| Constant | Value | Applies to |
+| Export | Value | Scope |
 | --- | --- | --- |
-| `MAX_NAME_LENGTH` | 255 | Final file or directory name |
-| `MAX_PAD_WIDTH` | 255 | `sequence_insert.padWidth` and the custom-rule `pad()` width |
-| `MAX_REGEX_PATTERN_LENGTH` | 1000 | `find_replace` patterns with `useRegex` and `regexReplace()` patterns |
-| `MAX_CUSTOM_RULE_TEXT_LENGTH` | 4096 | Any text value produced while evaluating a custom rule |
+| `MAX_NAME_LENGTH` | 255 | Final name: UTF-8 bytes on POSIX, UTF-16 units on Windows |
+| `MAX_PAD_WIDTH` | 255 | Numeric sequence padding and custom `pad()` |
+| `MAX_REGEX_PATTERN_LENGTH` | 1000 | Regex-mode `find_replace` and custom `regexReplace()` patterns |
+| `MAX_CUSTOM_RULE_TEXT_LENGTH` | 4096 | Custom helper results and concatenations |
 
-### Untrusted rules
-
-User-supplied regular expressions (`find_replace` with `useRegex`, and `regexReplace()` in custom rules) run on the JavaScript regex engine, which can backtrack catastrophically and cannot be interrupted synchronously. The pattern length limit does not prevent this. Callers that accept rules from users should run `generatePreview` off the main thread (for example in a `worker_threads` Worker or a Web Worker) and terminate it after a timeout.
-
-The root export contains the complete API. `@fastrenamer/rename-engine/sort` and `@fastrenamer/rename-engine/types` are also available for narrower imports.
+Regex length limits cannot prevent catastrophic backtracking. Run user-controlled rules in a worker and enforce a timeout; see the [integration guide](docs/guide.md#running-untrusted-rules-in-a-worker). The custom language also has no overall expression-size or nesting-depth limit. The text limit is not a general memory or runtime bound.
 
 ## Development
 
-From this directory, the package can be developed on its own with npm (Bun also works):
-
 ```sh
-npm install
+npm ci
 npm run check
 ```
 
-Build output is written to `dist/` and is what consumers receive.
+Build output goes to `dist/`. See [development and packaging](docs/development.md) for the check pipeline and package contents. Licensed under [MIT](LICENSE).
