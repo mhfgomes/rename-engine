@@ -4,7 +4,7 @@
 
 ## Setup and checks
 
-Use Node.js 20 or newer with npm. This is an ESM TypeScript package with no runtime dependencies.
+Use Node.js 22 or newer with npm. This is an ESM TypeScript package with no runtime dependencies.
 
 ```sh
 npm ci

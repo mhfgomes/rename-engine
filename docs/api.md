@@ -18,7 +18,7 @@ import { sortItemsByMode, type SortItemsOptions } from '@fastrenamer/rename-engi
 import type { PreviewResult } from '@fastrenamer/rename-engine/types';
 ```
 
-There are no supported `custom-rule`, `path-key`, or `limits` subpath exports. `evaluateCustomRuleExpression`, `EvaluateCustomRuleOptions`, `getCompiledExpressionCacheSize`, `getPathApi`, `normalizeFsPath`, `isCaseInsensitive`, and `isNormalizationInsensitive` are internal, even though some are exported between source modules.
+There are no supported `custom-rule`, `path-key`, or `limits` subpath exports. `evaluateCustomRuleExpression`, `EvaluateCustomRuleOptions`, `getCompiledExpressionCacheSize`, `PathApi`, `getPathApi`, `normalizeFsPath`, `isCaseInsensitive`, and `isNormalizationInsensitive` are internal, even though some are exported between source modules.
 
 ## `generatePreview(options): PreviewResult`
 

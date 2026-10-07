@@ -17,7 +17,7 @@ The reusable planning engine behind Fast Renamer. It applies ordered rename rule
 npm install @fastrenamer/rename-engine
 ```
 
-Node.js 20 or newer is supported. The package is ESM-only and has no runtime dependencies. Use ESM `import`, or dynamic `import()` from CommonJS. The implementation uses `node:path`; a browser integration needs an appropriate bundler/polyfill and is not a standalone browser build.
+Node.js 22 or newer is supported. The package is ESM-only and has no runtime dependencies. Use ESM `import`, or dynamic `import()` from CommonJS. The implementation uses `node:path`; a browser integration needs an appropriate bundler/polyfill and is not a standalone browser build.
 
 ## Quick start
 

@@ -133,6 +133,8 @@ Common detail messages include `Sequence start and step must be finite numbers.`
 
 ## Migrating to v0.2.0
 
+Node.js 22 or newer is required; Node.js 20 is no longer supported. Published declarations do not require Node type definitions solely to import this package.
+
 There are no new status values, but stricter validation and corrected ordering can change results:
 
 - Use `sortItemsByMode` for hierarchy-aware sorting; `compareItemsBySortMode` now defines only a total-order base comparator.
