@@ -122,17 +122,17 @@ Applies enabled rules in order, returning the joined stem/extension. The positio
 interface NameParts { stem: string; extension: string }
 ```
 
-Directories always have `{ stem: name, extension: '' }`. Files split at the last dot only when that dot is beyond index zero. Extensions exclude the leading dot.
+Directories always have `{ stem: name, extension: '' }`. Files split at the last dot only when that dot is beyond index zero and has text after it. A trailing dot remains part of the stem. Extensions exclude the leading dot.
 
 | Input (file) | Stem | Extension |
 | --- | --- | --- |
 | `archive.tar.gz` | `archive.tar` | `gz` |
 | `.gitignore` | `.gitignore` | empty |
 | `.config.json` | `.config` | `json` |
-| `report.` | `report` | empty |
+| `report.` | `report.` | empty |
 | `report` | `report` | empty |
 
-Joining a trailing-dot file loses that dot, so an empty rule list can still change `report.` into `report`. A custom rule returns a whole name and splits it again; `new_name` replaces only the current stem.
+Empty and disabled-only rule lists preserve trailing-dot filenames. These names are valid on POSIX targets but rejected on Windows. A custom rule returns a whole name and splits it again; `new_name` replaces only the current stem.
 
 ## `normalizePathKey(candidatePath: string, platform: PlatformTarget): string`
 

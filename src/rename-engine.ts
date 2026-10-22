@@ -66,7 +66,7 @@ export function splitName(name: string, isDirectory: boolean): NameParts {
   }
 
   const lastDot = name.lastIndexOf('.');
-  if (lastDot <= 0) {
+  if (lastDot <= 0 || lastDot === name.length - 1) {
     return { stem: name, extension: '' };
   }
 
