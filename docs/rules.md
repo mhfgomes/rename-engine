@@ -42,7 +42,7 @@ Tokens are matched case-insensitively. Unknown tokens remain verbatim. There is 
 | `{date}`, `{date:YYYYMMDD}` | Local date; default `YYYY-MM-DD` |
 | `{time}`, `{time:HH-mm-ss}` | Local time; default `HHmmss` |
 
-A numeric argument must contain only digits. If absent or nonnumeric, the value is `index + 1`. A digit argument sets the start to `Number(argument)` and the value to start plus index. Padding is enabled for multi-digit arguments or arguments beginning with zero: `{seq:10}` starts at `10` with minimum width 2; `{seq:000}` starts at `000`; `{seq:5}` starts at `5` without padding. The width is a minimum, so `{seq:099}` eventually produces `100`.
+A numeric argument must contain only digits. If absent or nonnumeric, the value is `index + 1`. A digit argument sets the start to `Number(argument)` and the value to start plus index. Starts must be finite, and computed values must stay within ±`Number.MAX_SAFE_INTEGER`; unsupported values become invalid preview rows or throw from `applyRulesToName`. Padding is enabled for multi-digit arguments or arguments beginning with zero: `{seq:10}` starts at `10` with minimum width 2; `{seq:000}` starts at `000`; `{seq:5}` starts at `5` without padding. The width is a minimum, so `{seq:099}` eventually produces `100`.
 
 With `reverseSequence: true`, numeric tokens use `max(0, total - index - 1)` instead of index. Forward letter tokens remain forward; reverse letter tokens remain reverse. Sequence tokens operate globally across all rows, not per folder. The template sequence implementation does not use the `sequence_insert.padWidth` cap; final name validation still applies in previews.
 
