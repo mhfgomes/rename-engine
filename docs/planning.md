@@ -70,9 +70,9 @@ Two or more distinct source keys resolving to one final target key conflict. Thi
 
 ### Existing targets outside the batch
 
-If `existingPathExists(nextPath)` returns true for a changed, noninvalid row and that target key is not a source key in the batch, the row conflicts. Without the callback the planner cannot detect external occupancy.
+For each changed, noninvalid row, the planner checks its proposed basename under its original source directory. This occupancy path accounts for unselected contents carried by ancestor renames. If `existingPathExists(occupancyPath)` returns true and that occupancy key is not a source key in the batch, the row conflicts. Without the callback the planner cannot detect external occupancy.
 
-The callback is cached per target key for one call. It is not called for unchanged or invalid rows, and is not used to verify source existence. A callback exception propagates.
+The callback is cached per occupancy-path key for one call. It is not called for unchanged or invalid rows, and is not used to verify source existence. A callback exception propagates.
 
 Existing paths that match batch source keys are not external conflicts. Swaps and chains can thus be allowed, but direct sequential execution could overwrite data or fail; staging is the caller's responsibility.
 
