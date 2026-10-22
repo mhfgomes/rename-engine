@@ -72,7 +72,7 @@ Indices are global across the sorted batch, including directories, unchanged ite
 
 ## Detecting occupied destinations
 
-The callback receives the final target path after ancestor renames. It must return a boolean synchronously. You can use a precomputed set or synchronous filesystem access:
+The callback receives the proposed basename under its original source directory, before ancestor renames. This checks files that will be carried into the final directory by an ancestor move. When no ancestor moves, this is the final target path. It must return a boolean synchronously. You can use a precomputed set or synchronous filesystem access:
 
 ```ts
 import { existsSync } from 'node:fs';
@@ -96,7 +96,7 @@ if (preview.summary.blocked) {
 
 `existsSync` checks the host filesystem using its own semantics. For another machine or target platform, gather an appropriate destination snapshot instead. For a key-based snapshot, normalize filesystem syntax before calling `normalizePathKey`; that helper only handles case/Unicode comparison, not redundant separators or `.`/`..` segments.
 
-Existence results are cached per target key within one preview. The callback is only invoked for changed rows without prior validation failures. A thrown callback error propagates from `generatePreview`; it is not a rule error. An async function is not a valid callback.
+Existence results are cached per occupancy-path key within one preview. The callback is only invoked for changed rows without prior validation failures. A thrown callback error propagates from `generatePreview`; it is not a rule error. An async function is not a valid callback.
 
 An existing target matching a batch source key is considered available to the batch. This permits swaps and chains, but requires a safe executor. The preview does not test whether that executor can complete the plan or whether the filesystem changed after the check.
 

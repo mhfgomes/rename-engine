@@ -38,7 +38,7 @@ interface GeneratePreviewOptions {
 | `rules` | Ordered rule list. Disabled rules are skipped. |
 | `platform` | Target name validation, path syntax, case matching, and Unicode matching. Required. |
 | `sortMode` | Requested base ordering; ancestors are additionally placed before descendants. Required. |
-| `existingPathExists` | Optional synchronous external occupancy check, cached by target key for this call. |
+| `existingPathExists` | Optional synchronous check of the proposed basename in its original directory, before ancestor moves. Cached by occupancy-path key for this call. |
 
 Returns a new result with rows in final sort order and a summary. It does not mutate the input array or perform filesystem operations. Empty input returns empty rows, zero counts, and `blocked: false`.
 

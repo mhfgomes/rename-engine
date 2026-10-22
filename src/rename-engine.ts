@@ -27,6 +27,7 @@ export interface GeneratePreviewOptions {
   rules: RenameRule[];
   platform: PlatformTarget;
   sortMode: SortMode;
+  /** Checks current filesystem occupancy, before any ancestor directories move. */
   existingPathExists?: (candidatePath: string) => boolean;
 }
 
@@ -715,7 +716,7 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
     destinationSources.set(nextKey, sources);
   });
 
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const nextKey = normalizePathKey(row.nextPath, platform);
 
     if (invalidIds.has(row.id)) {
@@ -728,13 +729,21 @@ export function generatePreview(options: GeneratePreviewOptions): PreviewResult 
     }
 
     if (row.changed && existingPathExists) {
-      let exists = existingCache.get(nextKey);
+      // Ancestor moves carry their contents with them. Check the destination
+      // basename in its current directory, not only in the future namespace.
+      // This also avoids checking unrelated contents of a directory swapped away.
+      const occupancyPath = pathApi.join(
+        pathApi.dirname(plannedItems[index].sourcePath),
+        row.proposedName,
+      );
+      const occupancyKey = normalizePathKey(occupancyPath, platform);
+      let exists = existingCache.get(occupancyKey);
       if (exists === undefined) {
-        exists = existingPathExists(row.nextPath);
-        existingCache.set(nextKey, exists);
+        exists = existingPathExists(occupancyPath);
+        existingCache.set(occupancyKey, exists);
       }
 
-      if (exists && !ownerByKey.has(nextKey)) {
+      if (exists && !ownerByKey.has(occupancyKey)) {
         conflictIds.add(row.id);
         row.reasons.push('Target path already exists outside the current batch.');
       }
