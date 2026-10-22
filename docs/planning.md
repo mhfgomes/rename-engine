@@ -18,7 +18,7 @@ The base comparator does not encode ancestry. Consumers sorting via `array.sort(
 
 Two different operations are involved:
 
-- Internal filesystem-path normalization uses target `path.win32` or `path.posix`, resolves redundant separators and `.`/`..` segments, and removes trailing separators except roots.
+- Ancestry detection and internal filesystem-path normalization use target `path.win32` or `path.posix`, resolves redundant separators and `.`/`..` segments, and removes trailing separators except roots.
 - Public `normalizePathKey` only adjusts Unicode/case matching. It does not canonicalize filesystem syntax, resolve symlinks, or query a volume.
 
 | Target | Path implementation | Key case behavior | Key Unicode behavior | Final basename length |
