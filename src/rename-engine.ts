@@ -183,11 +183,11 @@ function applyTokenAtPosition(
 
 function formatSequenceToken(index: number, argument?: string) {
   if (!argument || !/^\d+$/.test(argument)) {
-    return String(index + 1);
+    return String(computeSequenceValue(1, 1, index));
   }
 
   const start = Number(argument);
-  const nextValue = start + index;
+  const nextValue = computeSequenceValue(start, 1, index);
   const padWidth = argument.length > 1 || argument.startsWith('0') ? argument.length : 0;
   return padWidth > 0 ? String(nextValue).padStart(padWidth, '0') : String(nextValue);
 }
