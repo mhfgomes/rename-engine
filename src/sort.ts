@@ -1,4 +1,4 @@
-import { normalizePathKey } from './path-key.js';
+import { normalizeFsPath, normalizePathKey } from './path-key.js';
 import type { PlatformTarget, SortMode } from './types.js';
 
 // A fixed locale keeps ordering identical across machines regardless of the host locale.
@@ -22,7 +22,7 @@ export interface SortablePathItem {
 
 export interface SortItemsOptions {
   /**
-   * Target platform used to detect ancestor directories. Segments are compared with
+   * Target platform used to normalize paths and detect ancestor directories. Segments are compared with
    * `normalizePathKey`, so ancestry is case-insensitive on darwin and win32 and
    * normalization-insensitive only on darwin. When omitted, segments are compared exactly and
    * both `/` and `\` are treated as separators.
@@ -41,7 +41,8 @@ function getItemPath(item: SortablePathItem) {
 
 function splitPathSegments(candidatePath: string, platform: PlatformTarget | undefined) {
   const separators = platform === undefined || platform === 'win32' ? /[\\/]+/ : /\/+/;
-  return candidatePath
+  const normalized = platform ? normalizeFsPath(candidatePath, platform) : candidatePath;
+  return normalized
     .split(separators)
     .filter((segment) => segment !== '' && segment !== '.');
 }
