@@ -84,7 +84,7 @@ See the [complete language reference](custom-expressions.md) for all identifiers
 // My File.txt -> My-File.txt
 ```
 
-Replacement text supports all [new-name tokens](#new_name--newnamerule), including `{seq_num:0001}`, `{seq_letter}`, `{seq_letter_rev}`, `{original_stem}`, `{current_stem}`, `{parent}`, `{date}`, and `{time}`. Tokens expand once per item using its batch index and the name after earlier rules; repeated matches receive the same sequence value. Unknown tokens remain unchanged. For example, replacing `photo` with `image_{seq_num:001}` yields `image_001.jpg`, `image_002.jpg`, and so on.
+Both Find and replacement text support all [new-name tokens](#new_name--newnamerule), including `{seq_num:0001}`, `{seq_letter}`, `{seq_letter_rev}`, `{original_stem}`, `{current_stem}`, `{parent}`, `{date}`, and `{time}`. Tokens expand once per item using its batch index and the name after earlier rules; repeated matches receive the same sequence value. Unknown tokens remain unchanged. Find tokens expand before literal matching or regex compilation, so regex metacharacters in expanded values retain their regex meaning. An empty expanded Find value leaves the name unchanged. For example, replacing `photo` with `image_{seq_num:001}` yields `image_001.jpg`, `image_002.jpg`, and so on.
 
 Only the stem is searched. Literal replacement inserts replacement text literally, including `$&` or `$1`. Case-insensitive literal matching uses escaped Unicode-aware `iu`/`giu` regexes to preserve offsets when case conversion changes string length.
 
@@ -98,6 +98,8 @@ Regex mode uses `i` if case-insensitive and `g` if replacing all; it does not au
 }
 // Photo 12.jpg -> 12_Photo.jpg
 ```
+
+To renumber an existing sequence, use `find: "E{seq_num:25}"` and `replace: "E{seq_num:01}"`: in batch order, `E25.jpg`, `E26.jpg`, and `E27.jpg` become `E01.jpg`, `E02.jpg`, and `E03.jpg`. Both sequences use the same batch index.
 
 ## `prefix_suffix` — `PrefixSuffixRule`
 

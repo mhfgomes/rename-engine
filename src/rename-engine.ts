@@ -328,28 +328,29 @@ function applyRule(
       }
     }
     case 'find_replace': {
-      if (!rule.find) {
+      const find = renderNewNameTemplate(rule.find, parts, originalName, isDirectory, context, now);
+      if (!find) {
         return parts;
       }
 
       const replacement = renderNewNameTemplate(rule.replace, parts, originalName, isDirectory, context, now);
       if (rule.useRegex) {
         const flags = `${rule.matchCase ? '' : 'i'}${rule.replaceAll ? 'g' : ''}`;
-        const expression = compileUserRegExp(rule.find, flags);
+        const expression = compileUserRegExp(find, flags);
         return { ...parts, stem: parts.stem.replace(expression, replacement) };
       }
 
       // Literal replacement: a function replacer keeps `$` sequences in `replace` verbatim.
       if (rule.matchCase) {
         const stem = rule.replaceAll
-          ? parts.stem.replaceAll(rule.find, () => replacement)
-          : parts.stem.replace(rule.find, () => replacement);
+          ? parts.stem.replaceAll(find, () => replacement)
+          : parts.stem.replace(find, () => replacement);
         return { ...parts, stem };
       }
 
       // Case-insensitive matching runs on the original string so match offsets stay valid even
       // when lowercasing changes string length (for example `İ`).
-      const expression = new RegExp(escapeRegExp(rule.find), rule.replaceAll ? 'giu' : 'iu');
+      const expression = new RegExp(escapeRegExp(find), rule.replaceAll ? 'giu' : 'iu');
       return { ...parts, stem: parts.stem.replace(expression, () => replacement) };
     }
     case 'prefix_suffix':
