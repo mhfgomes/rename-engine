@@ -32,3 +32,34 @@ describe('Find / Replace template tokens', () => {
     expect(rename({ find: 'missing' })).toBe('photo.TXT');
   });
 });
+
+describe('Find template tokens', () => {
+  it.each([false, true])('renumbers a batch with sequences in both fields (regex: %s)', (useRegex) => {
+    const names = ['E25.jpg', 'E26.jpg', 'E27.jpg'];
+    expect(names.map((name, index) => applyRulesToName(name, false, [{
+      ...rule, find: 'E{seq_num:25}', replace: 'E{seq_num:01}', useRegex,
+    }], { ...context, index, total: names.length, originalName: name }, now)))
+      .toEqual(['E01.jpg', 'E02.jpg', 'E03.jpg']);
+  });
+
+  it.each([false, true])('honors match count and case options for expanded searches (matchCase: %s)', (matchCase) => {
+    expect(rename({ find: 'E{seq_num:25}', replace: 'E{seq_num:01}', matchCase }, 'E26_e26.TXT'))
+      .toBe(matchCase ? 'E02_e26.TXT' : 'E02_E02.TXT');
+    expect(rename({ find: 'E{seq_num:25}', replace: 'E{seq_num:01}', matchCase, replaceAll: false }, 'E26_E26.TXT'))
+      .toBe('E02_E26.TXT');
+  });
+
+  it('uses earlier rules, original context and the approved clock for Find tokens', () => {
+    expect(rename({ find: '{current_stem}', replace: 'matched' }, 'photo.TXT', [
+      { id: 'prefix', type: 'prefix_suffix', enabled: true, prefix: 'pre_', suffix: '' },
+    ])).toBe('matched.TXT');
+    expect(rename({ find: '{original_stem}', replace: 'matched' }, 'photo.TXT')).toBe('matched.TXT');
+    expect(rename({ find: '{date}_{time}_{parent}_{seq_letter}_{seq_letter_rev}', replace: 'matched' },
+      '2026-10-29_111835_pictures_B_B.TXT')).toBe('matched.TXT');
+  });
+
+  it('keeps unknown tokens literal and ignores empty expanded searches', () => {
+    expect(rename({ find: '{unknown}', replace: 'matched' }, '{unknown}.TXT')).toBe('matched.TXT');
+    expect(rename({ find: '{current_stem}', replace: 'matched' }, '')).toBe('');
+  });
+});
