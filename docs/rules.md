@@ -71,7 +71,7 @@ See the [complete language reference](custom-expressions.md) for all identifiers
 | --- | --- | --- |
 | `type` | `'find_replace'` | Discriminator |
 | `find` | `string` | Literal text or regex source; empty is a no-op |
-| `replace` | `string` | Replacement |
+| `replace` | `string` | Replacement template (same tokens as `new_name`) |
 | `matchCase` | `boolean` | Case-sensitive matching when true |
 | `useRegex` | `boolean` | Interpret `find` as regex source when true |
 | `replaceAll` | `boolean` | Replace all matches when true, otherwise the first |
@@ -83,6 +83,8 @@ See the [complete language reference](custom-expressions.md) for all identifiers
 }
 // My File.txt -> My-File.txt
 ```
+
+Replacement text supports all [new-name tokens](#new_name--newnamerule), including `{seq_num:0001}`, `{seq_letter}`, `{seq_letter_rev}`, `{original_stem}`, `{current_stem}`, `{parent}`, `{date}`, and `{time}`. Tokens expand once per item using its batch index and the name after earlier rules; repeated matches receive the same sequence value. Unknown tokens remain unchanged. For example, replacing `photo` with `image_{seq_num:001}` yields `image_001.jpg`, `image_002.jpg`, and so on.
 
 Only the stem is searched. Literal replacement inserts replacement text literally, including `$&` or `$1`. Case-insensitive literal matching uses escaped Unicode-aware `iu`/`giu` regexes to preserve offsets when case conversion changes string length.
 
